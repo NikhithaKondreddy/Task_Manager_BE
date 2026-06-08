@@ -1,0 +1,78 @@
+const express = require('express');
+const cors = require('cors');
+const bodyParser = require('body-parser');
+const http = require('http');
+const socketIo = require('socket.io');
+const jwt = require('jsonwebtoken');
+require('dotenv').config();
+const env = require('./config/env');
+const app = express();
+const server = http.createServer(app);
+
+// ✅ Setup global production safety guards EARLY
+const productionSafetyGuard = require('./utils/productionSafetyGuard');
+productionSafetyGuard.setupGlobalErrorHandlers();
+
+const io = socketIo(server, {
+  cors: {
+    origin: (env && env.NODE_ENV === 'production') ? (env.FRONTEND_URL || env.BASE_URL) : '*',
+    methods: ["GET", "POST", "PUT", "DELETE"]
+  }
+});
+const db = require('./config/db');
+const ChatService = require('./services/chatService');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const xss = require('xss-clean');
+const hpp = require('hpp');
+const morgan = require('morgan');
+const logger = require('./logger');
+const path = require('path');
+const fs = require('fs');
+
+global.__root = __dirname + '/';
+
+app.disable('x-powered-by');
+app.use(helmet());
+app.use(xss());
+app.use(hpp());
+
+const isDevelopment = process.env.NODE_ENV !== 'production';
+
+// Define limits
+const globalRateLimitConfig = {
+  windowMs: 15 * 60 * 1000, 
+  max: isDevelopment ? 5000 : 2000, 
+  message: {
+    success: false,
+    error: 'Our servers are experiencing high traffic right now, please try again in a minute.',
+    code: 'RATE_LIMIT_EXCEEDED'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+};
+
+const authRateLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: isDevelopment ? 100 : 20, // Allow more login attempts
+  message: {
+    success: false,
+    error: 'Too many authentication attempts. Please try again later.',
+    code: 'AUTH_RATE_LIMIT_EXCEEDED',
+    retryAfter: '15 minutes'
+  },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+app.use('/api/auth', authRateLimit);
+app.use(rateLimit(globalRateLimitConfig));
+
+app.use(morgan('combined', { stream: { write: msg => logger.info(msg.trim()) } }));
+
+// Our custom structured JSON request logger
+const requestLogger = require('./middleware/requestLogger');
+app.use(requestLogger);
+
+const auditExpress = require('./middleware/auditExpress');
+app.use(auditExpress);

@@ -1,0 +1,56 @@
+-- Migration: create ticket_followers, ticket_watchers, ticket_history, ticket_timeline, ticket_status_history
+CREATE TABLE IF NOT EXISTS ticket_followers (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  added_by INT UNSIGNED DEFAULT NULL,
+  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (ticket_id),
+  INDEX (user_id)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_watchers (
+  id INT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  added_by INT UNSIGNED DEFAULT NULL,
+  added_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (ticket_id),
+  INDEX (user_id)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  event_type VARCHAR(128) NOT NULL,
+  actor_id INT UNSIGNED DEFAULT NULL,
+  old_value TEXT,
+  new_value TEXT,
+  metadata JSON DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (ticket_id),
+  INDEX (event_type)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_timeline (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  event VARCHAR(255) NOT NULL,
+  actor_id INT UNSIGNED DEFAULT NULL,
+  source ENUM('SYSTEM','USER','INTEGRATION') DEFAULT 'USER',
+  metadata JSON DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (ticket_id),
+  INDEX (created_at)
+);
+
+CREATE TABLE IF NOT EXISTS ticket_status_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  old_status VARCHAR(64) NOT NULL,
+  new_status VARCHAR(64) NOT NULL,
+  changed_by INT UNSIGNED DEFAULT NULL,
+  reason TEXT,
+  changed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (ticket_id)
+);

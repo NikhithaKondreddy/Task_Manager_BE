@@ -1,0 +1,38 @@
+-- Migration: create ticket_approvals, approval_tasks, approval_history
+CREATE TABLE IF NOT EXISTS ticket_approvals (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  workflow_id INT UNSIGNED DEFAULT NULL,
+  current_level INT DEFAULT 0,
+  status ENUM('PENDING','APPROVED','REJECTED','CANCELLED') DEFAULT 'PENDING',
+  submitted_by INT UNSIGNED DEFAULT NULL,
+  submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  closed_at TIMESTAMP NULL,
+  meta JSON DEFAULT NULL,
+  INDEX (ticket_id),
+  INDEX (workflow_id)
+);
+
+CREATE TABLE IF NOT EXISTS approval_tasks (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  approval_id BIGINT UNSIGNED NOT NULL,
+  level INT NOT NULL,
+  approver_id INT UNSIGNED NOT NULL,
+  status ENUM('PENDING','APPROVED','REJECTED','REQUESTED_CHANGES') DEFAULT 'PENDING',
+  actioned_by INT UNSIGNED DEFAULT NULL,
+  actioned_at TIMESTAMP NULL,
+  comments TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (approval_id),
+  INDEX (approver_id)
+);
+
+CREATE TABLE IF NOT EXISTS approval_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  approval_task_id BIGINT UNSIGNED NOT NULL,
+  action VARCHAR(64) NOT NULL,
+  performed_by INT UNSIGNED DEFAULT NULL,
+  performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  comments TEXT,
+  INDEX (approval_task_id)
+);

@@ -1,0 +1,49 @@
+-- Migration: create feedback, assets, asset_assignments, asset_history
+CREATE TABLE IF NOT EXISTS feedback (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  ticket_id INT UNSIGNED NOT NULL,
+  user_id INT UNSIGNED NOT NULL,
+  rating TINYINT UNSIGNED NOT NULL,
+  comment TEXT,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (ticket_id),
+  INDEX (user_id)
+);
+
+CREATE TABLE IF NOT EXISTS assets (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  asset_tag VARCHAR(128) NOT NULL UNIQUE,
+  name VARCHAR(255) NOT NULL,
+  category VARCHAR(128) DEFAULT NULL,
+  type VARCHAR(128) DEFAULT NULL,
+  status VARCHAR(64) DEFAULT 'AVAILABLE',
+  assigned_to INT UNSIGNED DEFAULT NULL,
+  location_id INT UNSIGNED DEFAULT NULL,
+  warranty_end DATE DEFAULT NULL,
+  metadata JSON DEFAULT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  INDEX (asset_tag),
+  INDEX (assigned_to)
+);
+
+CREATE TABLE IF NOT EXISTS asset_assignments (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  asset_id BIGINT UNSIGNED NOT NULL,
+  assigned_to_user_id INT UNSIGNED NOT NULL,
+  assigned_by INT UNSIGNED DEFAULT NULL,
+  assigned_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  returned_at TIMESTAMP NULL,
+  notes TEXT,
+  INDEX (asset_id),
+  INDEX (assigned_to_user_id)
+);
+
+CREATE TABLE IF NOT EXISTS asset_history (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  asset_id BIGINT UNSIGNED NOT NULL,
+  action VARCHAR(128) NOT NULL,
+  performed_by INT UNSIGNED DEFAULT NULL,
+  performed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  notes TEXT,
+  INDEX (asset_id)
+);
