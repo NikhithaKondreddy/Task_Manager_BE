@@ -393,7 +393,7 @@ CREATE TABLE `comments` (
 --
 
 CREATE TABLE `departments` (
-  `id` int NOT NULL,
+  `id` int NOT NULL AUTO_INCREMENT PRIMARY KEY,
   `name` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
   `parent_department_id` int DEFAULT NULL,
   `responsibilities` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
