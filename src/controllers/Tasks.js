@@ -33,6 +33,7 @@ const toMySQLDate = (d) => {
 };
 const NotificationService = require(__root + 'services/notificationService');
 const workflowService = require(__root + 'workflow/workflowService');
+const taskWorkflowAutomationService = require(__root + 'services/taskWorkflowAutomationService');
 const errorResponse = require(__root + 'utils/errorResponse');
 const { check } = require('express-validator');
 const validateRequest = require(__root + 'middleware/validateRequest');
@@ -2251,7 +2252,14 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
         // Mark all assignment statuses as COMPLETED (changed from APPROVED as per requirement)
         await qConn(
           connection,
-          `UPDATE task_assignment_status SET status = 'COMPLETED', approved_at = ?, review_requested = 0, updated_at = NOW() WHERE task_id = ?`,
+          `UPDATE task_assignment_status
+           SET status = 'COMPLETED',
+               approved_at = ?,
+               review_requested = 0,
+               review_requested_at = NULL,
+               last_review_reminder_at = NULL,
+               updated_at = NOW()
+           WHERE task_id = ?`,
           [nowSql, task.id]
         );
       }
@@ -2272,6 +2280,8 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
                tas.rejection_reason = ?,
                tas.rejected_at = ?,
                tas.review_requested = 0,
+               tas.review_requested_at = NULL,
+               tas.last_review_reminder_at = NULL,
                tas.approved_at = NULL,
                tas.updated_at = NOW()
            WHERE tas.task_id = ?${assignmentHasReadOnly ? ' AND (ta.is_read_only IS NULL OR ta.is_read_only != 1)' : ''}`,
@@ -2386,6 +2396,8 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
       assignUpdates.push('live_timer = COALESCE(live_timer, ?)');
       assignValues.push(nowSql);
       assignUpdates.push('review_requested = 0');
+      assignUpdates.push('review_requested_at = NULL');
+      assignUpdates.push('last_review_reminder_at = NULL');
       if (currentUserStatus === 'REJECTED') {
         assignUpdates.push('completed_at = NULL');
         assignUpdates.push('rejected_at = NULL');
@@ -2427,6 +2439,8 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
       assignValues.push(duration);
       assignUpdates.push('live_timer = NULL');
       assignUpdates.push('review_requested = 0');
+      assignUpdates.push('review_requested_at = NULL');
+      assignUpdates.push('last_review_reminder_at = NULL');
 
       if (requestedStatus === 'COMPLETED') {
         assignUpdates.push('completed_at = ?');
@@ -2460,6 +2474,9 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
       assignValues.push(duration);
       assignUpdates.push('live_timer = NULL');
       assignUpdates.push('review_requested = 1');
+      assignUpdates.push('review_requested_at = ?');
+      assignValues.push(nowSql);
+      assignUpdates.push('last_review_reminder_at = NULL');
       if (lastLive) {
         try {
           await qConn(
@@ -2484,6 +2501,8 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
       assignUpdates.push('completed_at = NULL');
       assignUpdates.push('total_duration = 0');
       assignUpdates.push('review_requested = 0');
+      assignUpdates.push('review_requested_at = NULL');
+      assignUpdates.push('last_review_reminder_at = NULL');
       try {
         await qConn(
           connection,
@@ -2574,6 +2593,13 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
         task.public_id || String(task.id),
         tenantId
       );
+      await taskWorkflowAutomationService.sendReviewRequestNotification({
+        task,
+        requester: req.user,
+        tenantId
+      }).catch((error) => {
+        logger.warn(`Review request email workflow failed for task=${task.id}: ${error.message}`);
+      });
     }
 
     await sendTenantTaskNotifications(
@@ -2993,6 +3019,12 @@ async function ensureTaskAssignmentStatusTable() {
 async function ensureTaskAssignmentReviewColumns() {
   if (!await hasColumn('task_assignment_status', 'review_requested')) {
     await q('ALTER TABLE task_assignment_status ADD COLUMN review_requested TINYINT(1) NOT NULL DEFAULT 0');
+  }
+  if (!await hasColumn('task_assignment_status', 'review_requested_at')) {
+    await q('ALTER TABLE task_assignment_status ADD COLUMN review_requested_at DATETIME NULL');
+  }
+  if (!await hasColumn('task_assignment_status', 'last_review_reminder_at')) {
+    await q('ALTER TABLE task_assignment_status ADD COLUMN last_review_reminder_at DATETIME NULL');
   }
 }
 

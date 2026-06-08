@@ -450,6 +450,7 @@ const AuthController = require(__root + 'controllers/AuthController');
 const auditRoutes = require(__root + 'routes/auditRoutes');
 const StaffUser = require(__root + 'controllers/User');
 const tasksCRUD = require(__root + 'controllers/Tasks');
+const taskWorkflowAutomationRoutes = require(__root + 'routes/taskWorkflowAutomationRoutes');
 const uploadCRUD = require(__root + 'controllers/Uploads');
 const clientRoutes = require(__root + 'routes/clientRoutes');
 const adminRoutes = require(__root + 'routes/adminRoutes');
@@ -494,6 +495,7 @@ app.use(['/api/employee', '/employee'], employeeRoutes);
 
 app.use(['/api/users', '/users'], auth, userSearchRoutes);
 app.use(['/api/users', '/users'], clientViewerAccessControl, StaffUser);
+app.use(['/api/tasks', '/tasks'], clientViewerAccessControl, taskWorkflowAutomationRoutes);
 app.use(['/api/tasks', '/tasks'], clientViewerAccessControl, tasksCRUD);
 app.use(['/api/uploads', '/uploads'], uploadCRUD);
 app.use(['/api/clients', '/clients'], clientRoutes);

@@ -267,6 +267,87 @@ function taskReassignmentRejectedManagerTemplate({ taskTitle, oldAssignee, taskL
     ])
   };
 }
+
+function taskDueReminderTemplate({
+  employeeName = 'Team member',
+  projectName = 'Project',
+  taskName = 'Task',
+  dueDate = 'Not set',
+  remainingTime = '00:00:00',
+  taskLink = ''
+}) {
+  return {
+    subject: `Task Due Reminder: ${taskName}`,
+    text: `Hello ${employeeName},\nTask due reminder\nProject: ${projectName}\nTask: ${taskName}\nDue Date: ${dueDate}\nRemaining Time: ${remainingTime}`,
+    html: generateTemplate(`Hello ${employeeName},`, 'A task assigned to you has crossed its due date:', [
+      { label: 'PROJECT', value: projectName },
+      { label: 'TASK', value: taskName },
+      { label: 'DUE DATE', value: dueDate },
+      { label: 'REMAINING TIME', value: remainingTime },
+      taskLink ? { label: 'TASK LINK', value: `<a href="${taskLink}" target="_blank" rel="noreferrer">Open task</a>` } : null
+    ])
+  };
+}
+
+function taskEscalationTemplate({
+  recipientName = 'Team member',
+  taskName = 'Task',
+  projectName = 'Project',
+  escalationLevel = 1,
+  overdueDuration = '00:00:00',
+  projectDetails = '',
+  taskLink = '',
+  isManager = false
+}) {
+  return {
+    subject: `Task Escalation Level ${escalationLevel}: ${taskName}`,
+    text: `Hello ${recipientName},\nTask escalation level ${escalationLevel}\nTask: ${taskName}\nProject: ${projectName}\nOverdue Duration: ${overdueDuration}`,
+    html: generateTemplate(`Hello ${recipientName},`, isManager ? 'A task has been escalated for manager attention:' : 'A task assigned to you has been escalated:', [
+      { label: 'TASK', value: taskName },
+      { label: 'PROJECT', value: projectName },
+      { label: 'ESCALATION LEVEL', value: `<strong>${escalationLevel}</strong>` },
+      { label: 'OVERDUE DURATION', value: overdueDuration },
+      projectDetails ? { label: 'PROJECT DETAILS', value: projectDetails } : null,
+      taskLink ? { label: 'TASK LINK', value: `<a href="${taskLink}" target="_blank" rel="noreferrer">Open task</a>` } : null
+    ])
+  };
+}
+
+function taskReviewRequestTemplate({
+  managerName = 'Manager',
+  taskName = 'Task',
+  employeeName = 'Employee',
+  reviewLink = ''
+}) {
+  return {
+    subject: `Review Requested: ${taskName}`,
+    text: `Hello ${managerName},\nA task has been submitted for review.\nTask: ${taskName}\nEmployee: ${employeeName}`,
+    html: generateTemplate(`Hello ${managerName},`, 'A task has been submitted for your review:', [
+      { label: 'TASK SUBMITTED', value: taskName },
+      { label: 'EMPLOYEE', value: employeeName },
+      reviewLink ? { label: 'REVIEW LINK', value: `<a href="${reviewLink}" target="_blank" rel="noreferrer">Open review</a>` } : null
+    ])
+  };
+}
+
+function taskReviewReminderTemplate({
+  managerName = 'Manager',
+  taskName = 'Task',
+  employeeName = 'Employee',
+  daysPending = 1,
+  reviewLink = ''
+}) {
+  return {
+    subject: `Review Reminder: ${taskName}`,
+    text: `Hello ${managerName},\nA task review is still pending.\nTask: ${taskName}\nEmployee: ${employeeName}\nDays Pending: ${daysPending}`,
+    html: generateTemplate(`Hello ${managerName},`, 'A task review is still pending:', [
+      { label: 'PENDING REVIEW', value: taskName },
+      { label: 'EMPLOYEE', value: employeeName },
+      { label: 'DAYS PENDING', value: daysPending },
+      reviewLink ? { label: 'REVIEW LINK', value: `<a href="${reviewLink}" target="_blank" rel="noreferrer">Open review</a>` } : null
+    ])
+  };
+}
  
 function projectManagerAssignmentTemplate({
   projectName,
@@ -567,6 +648,10 @@ module.exports = {
   taskReassignmentManagerTemplate,
   taskReassignmentRejectedTemplate,
   taskReassignmentRejectedManagerTemplate,
+  taskDueReminderTemplate,
+  taskEscalationTemplate,
+  taskReviewRequestTemplate,
+  taskReviewReminderTemplate,
   projectManagerAssignmentTemplate,
   clientProjectCreationTemplate,
   taskAssignedToEmployeeTemplate

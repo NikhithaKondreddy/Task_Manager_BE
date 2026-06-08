@@ -7,6 +7,7 @@ const logger = require('./logger');
 const { startSupportEmailWorker, startTicketAutomationJobs } = require('./src/modules/tickets');
 const auditCleanupService = require('./src/services/auditCleanupService');
 const notificationCleanupService = require('./src/services/notificationCleanupService');
+const taskWorkflowAutomationService = require('./src/services/taskWorkflowAutomationService');
 
 async function start() {
   const requireRedis = (process.env.REQUIRE_REDIS !== 'false') && !!env.REDIS_URL;
@@ -49,6 +50,9 @@ async function start() {
     startTicketAutomationJobs();
     auditCleanupService.start();
     notificationCleanupService.start();
+    taskWorkflowAutomationService.start().catch((error) => {
+      logger.error('Failed to start task workflow automation scheduler: ' + (error && error.message ? error.message : String(error)));
+    });
   });
 
   process.on('SIGINT', async () => {
