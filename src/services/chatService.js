@@ -122,9 +122,22 @@ class ChatService {
 
   async saveMessage(projectId, senderId, senderName, message, messageType = 'text') {
     try {
+      // Resolve projectId: may be a public_id (string) or internal id (number)
+      let internalProjectId = projectId;
+      if (typeof projectId === 'string' && !/^\d+$/.test(projectId)) {
+        const projResult = await this.query(
+          'SELECT id FROM projects WHERE public_id = ?',
+          [projectId]
+        );
+        if (!projResult || projResult.length === 0) {
+          throw new Error(`Project not found for public_id: ${projectId}`);
+        }
+        internalProjectId = projResult[0].id;
+      }
+
       const result = await this.query(
         'INSERT INTO chat_messages (project_id, sender_id, sender_name, message, message_type) VALUES (?, ?, ?, ?, ?)',
-        [projectId, senderId, senderName, message, messageType]
+        [internalProjectId, senderId, senderName, message, messageType]
       );
 
       let senderPublicId = senderId;
@@ -140,7 +153,7 @@ class ChatService {
 
       return {
         id: result.insertId,
-        project_id: projectId,
+        project_id: projectId, // return the original public_id so frontend can match
         sender_id: senderPublicId,
         sender_name: senderName,
         message,
@@ -415,15 +428,12 @@ class ChatService {
               COUNT(*) as total_tasks
             FROM tasks
             WHERE project_id = ?
-          `, [projectId]);
+          `, [internalProjectId]);
 
           const { completed_tasks, total_tasks } = projectInfo[0];
           const completionRate = total_tasks > 0 ? Math.round((completed_tasks / total_tasks) * 100) : 0;
 
-          response = `Project Status:
-• Total Tasks: ${total_tasks}
-• Completed: ${completed_tasks}
-• Completion Rate: ${completionRate}%`;
+          response = `Project Status:\n• Total Tasks: ${total_tasks}\n• Completed: ${completed_tasks}\n• Completion Rate: ${completionRate}%`;
           break;
 
         case '/members':
