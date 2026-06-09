@@ -113,17 +113,7 @@ router.get('/', requireRole('Admin', 'Manager'), authorize('users', 'read'), (re
   return res.redirect(307, `${req.baseUrl}/getusers`);
 });
 
-router.get('/:id', requireRole('Admin', 'Manager'), authorize('users', 'read'), (req, res) => {
-  return res.redirect(307, `${req.baseUrl}/getuserbyid/${req.params.id}`);
-});
 
-router.put('/:id', requireRole('Admin'), authorize('users', 'update'), (req, res) => {
-  return res.redirect(307, `${req.baseUrl}/update/${req.params.id}`);
-});
-
-router.delete('/:id', requireRole('Admin'), authorize('users', 'deactivate'), (req, res) => {
-  return res.redirect(307, `${req.baseUrl}/delete/${req.params.id}`);
-});
 
 router.put('/:id/status', requireRole('Admin'), authorize('users', 'update'), async (req, res) => {
   try {
@@ -758,7 +748,7 @@ router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin',
       departmentScope = ' AND u.department_public_id = ?';
       params.push(managerDepartmentId);
     }
-  const query = `
+    const query = `
     SELECT u.name, u.title, u.email, u.role, u.isActive, u.phone, u.public_id, u.isGuest,
            u.department_public_id, d.name AS department_name
     FROM users u
@@ -766,24 +756,24 @@ router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin',
     WHERE ${isNumeric ? 'u._id' : 'u.public_id'} = ? AND u.tenant_id = ?${departmentScope}
     LIMIT 1
   `;
-  db.query(query, params, (err, results) => {
-    if (err) return res.status(500).json({ error: "Failed to fetch user" });
-    if (!results || results.length === 0) return res.status(404).json({ error: 'User not found' });
+    db.query(query, params, (err, results) => {
+      if (err) return res.status(500).json({ error: "Failed to fetch user" });
+      if (!results || results.length === 0) return res.status(404).json({ error: 'User not found' });
 
-    const out = results[0];
-    res.status(200).json({
-      id: out.public_id,
-      name: out.name,
-      title: out.title,
-      email: out.email,
-      role: out.role,
-      isActive: out.isActive,
-      isGuest: out.isGuest || false,
-      phone: out.phone,
-      departmentPublicId: out.department_public_id,
-      departmentName: out.department_name
+      const out = results[0];
+      res.status(200).json({
+        id: out.public_id,
+        name: out.name,
+        title: out.title,
+        email: out.email,
+        role: out.role,
+        isActive: out.isActive,
+        isGuest: out.isGuest || false,
+        phone: out.phone,
+        departmentPublicId: out.department_public_id,
+        departmentName: out.department_name
+      });
     });
-  });
   };
   run().catch((error) => res.status(500).json({ error: error.message }));
 });
@@ -800,6 +790,18 @@ router.delete("/delete/:user_id", ruleEngine(RULES.USER_DELETE), requireRole('Ad
     if (result.affectedRows === 0) return res.status(404).json({ success: false, message: "User not found" });
     return res.status(200).json({ success: true, message: "User deleted successfully" });
   });
+});
+
+router.get('/:id', requireRole('Admin', 'Manager'), authorize('users', 'read'), (req, res) => {
+  return res.redirect(307, `${req.baseUrl}/getuserbyid/${req.params.id}`);
+});
+
+router.put('/:id', requireRole('Admin'), authorize('users', 'update'), (req, res) => {
+  return res.redirect(307, `${req.baseUrl}/update/${req.params.id}`);
+});
+
+router.delete('/:id', requireRole('Admin'), authorize('users', 'deactivate'), (req, res) => {
+  return res.redirect(307, `${req.baseUrl}/delete/${req.params.id}`);
 });
 
 module.exports = router;
