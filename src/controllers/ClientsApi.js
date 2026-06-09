@@ -2,6 +2,7 @@ const db = require(__root + 'db');
 const express = require('express');
 const router = express.Router();
 const logger = require('../logger');
+const { gatherManagerProjects } = require('./managerController');
 const errorResponse = require(__root + 'utils/errorResponse');
 const crypto = require('crypto');
 const path = require('path');

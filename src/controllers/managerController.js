@@ -338,6 +338,7 @@ async function fetchManagerDepartment(userId) {
 }
 
 module.exports = {
+  gatherManagerProjects,
   getManagerDashboard: async (req, res) => {
     try {
       const resources = await requireFeatureAccess(req, 'Dashboard');
