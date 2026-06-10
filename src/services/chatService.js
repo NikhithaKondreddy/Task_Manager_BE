@@ -44,6 +44,19 @@ class ChatService {
     }
   }
 
+  async resolveProjectId(projectId) {
+    // Return numeric id if already numeric, otherwise resolve public_id -> id
+    if (typeof projectId === 'number' || (/^\d+$/.test(String(projectId)))) {
+      return Number(projectId);
+    }
+
+    const projResult = await this.query('SELECT id FROM projects WHERE public_id = ?', [projectId]);
+    if (!projResult || projResult.length === 0) {
+      throw new Error(`Project not found for public_id: ${projectId}`);
+    }
+    return projResult[0].id;
+  }
+
   async validateProjectAccess(userId, projectId) {
     try {
 
@@ -169,6 +182,8 @@ class ChatService {
 
   async getProjectMessages(projectId, limit = 50, offset = 0) {
     try {
+      const internalProjectId = await this.resolveProjectId(projectId);
+
       const messages = await this.query(`
         SELECT
           cm.id,
@@ -187,7 +202,7 @@ class ChatService {
         WHERE cm.project_id = ?
         ORDER BY cm.created_at DESC
         LIMIT ? OFFSET ?
-      `, [projectId, limit, offset]);
+      `, [internalProjectId, limit, offset]);
 
       return messages.reverse(); // Return in chronological order
     } catch (error) {
@@ -227,9 +242,10 @@ class ChatService {
 
   async getOnlineParticipants(projectId) {
     try {
+      const internalProjectId = await this.resolveProjectId(projectId);
       const participants = await this.query(
         'SELECT user_id, user_name, user_role, last_seen FROM chat_participants WHERE project_id = ? AND is_online = true',
-        [projectId]
+        [internalProjectId]
       );
       return participants;
     } catch (error) {
@@ -303,6 +319,8 @@ class ChatService {
 
   async getChatStats(projectId) {
     try {
+      const internalProjectId = await this.resolveProjectId(projectId);
+
       const [messageStats] = await this.query(
         `SELECT
           COUNT(*) as total_messages,
@@ -310,7 +328,7 @@ class ChatService {
           COUNT(CASE WHEN message_type = 'bot' THEN 1 END) as bot_messages,
           MAX(created_at) as last_message_time
          FROM chat_messages WHERE project_id = ?`,
-        [projectId]
+        [internalProjectId]
       );
 
       const allMembers = await this.getAllProjectMembers(projectId);

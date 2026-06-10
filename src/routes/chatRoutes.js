@@ -195,10 +195,18 @@ router.delete('/:projectId/chat/messages/:messageId', ruleEngine(RULES.PROJECT_U
   try {
     const { projectId, messageId } = req.params;
 
+    // Resolve public project id to internal id for DB checks
+    let internalProjectId;
+    try {
+      internalProjectId = await ChatService.resolveProjectId(projectId);
+    } catch (err) {
+      return res.status(404).json({ success: false, error: 'Project not found' });
+    }
+
     const [message] = await q(`
       SELECT * FROM chat_messages
       WHERE id = ? AND project_id = ?
-    `, [messageId, projectId]);
+    `, [messageId, internalProjectId]);
  
     if (!message) {
       return res.status(404).json({

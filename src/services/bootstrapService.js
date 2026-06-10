@@ -72,15 +72,12 @@ async function q(sql, params = []) {
 
 async function tableExists(tableName) {
   if (tableCache.has(tableName)) return tableCache.get(tableName);
-  const rows = await q(
-    `
+  const rows = await q(`
       SELECT TABLE_NAME
       FROM INFORMATION_SCHEMA.TABLES
       WHERE TABLE_SCHEMA = DATABASE()
         AND TABLE_NAME = ?
-    `,
-    [tableName]
-  );
+    `, [tableName]);
   const exists = Array.isArray(rows) && rows.length > 0;
   tableCache.set(tableName, exists);
   return exists;
@@ -89,16 +86,13 @@ async function tableExists(tableName) {
 async function columnExists(tableName, columnName) {
   const cacheKey = `${tableName}::${columnName}`;
   if (columnCache.has(cacheKey)) return columnCache.get(cacheKey);
-  const rows = await q(
-    `
+  const rows = await q(`
       SELECT COLUMN_NAME
       FROM INFORMATION_SCHEMA.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE()
         AND TABLE_NAME = ?
         AND COLUMN_NAME = ?
-    `,
-    [tableName, columnName]
-  );
+    `, [tableName, columnName]);
   const exists = Array.isArray(rows) && rows.length > 0;
   columnCache.set(cacheKey, exists);
   return exists;
@@ -115,15 +109,12 @@ async function indexExists(tableName, indexName) {
 
 async function triggerExists(triggerName) {
   if (triggerCache.has(triggerName)) return triggerCache.get(triggerName);
-  const rows = await q(
-    `
+  const rows = await q(`
       SELECT TRIGGER_NAME
       FROM INFORMATION_SCHEMA.TRIGGERS
       WHERE TRIGGER_SCHEMA = DATABASE()
         AND TRIGGER_NAME = ?
-    `,
-    [triggerName]
-  );
+    `, [triggerName]);
   const exists = Array.isArray(rows) && rows.length > 0;
   triggerCache.set(triggerName, exists);
   return exists;
@@ -316,6 +307,68 @@ async function ensureSoftDeleteColumns() {
   }
 }
 
+async function ensureAutoIncrement() {
+  const tables = ['chat_messages', 'project_chats', 'project_departments', 'chat_participants'];
+  for (const table of tables) {
+    if (!await tableExists(table)) continue;
+    try {
+      const cols = await q(`
+        SELECT COLUMN_NAME, COLUMN_KEY, EXTRA, IS_NULLABLE
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?
+      `, [table]);
+
+      if (!Array.isArray(cols) || cols.length === 0) {
+        logger.warn(`bootstrapService: no columns found for ${table}, skipping AUTO_INCREMENT`);
+        continue;
+      }
+
+      const autoCol = cols.find(c => c.EXTRA && c.EXTRA.toLowerCase().includes('auto_increment'));
+      if (autoCol) {
+        if (autoCol.COLUMN_NAME === 'id') {
+          logger.info(`bootstrapService: ${table}.id already AUTO_INCREMENT`);
+        } else {
+          logger.warn(`bootstrapService: ${table} has AUTO_INCREMENT on ${autoCol.COLUMN_NAME}; skipping id modification`);
+        }
+        continue;
+      }
+
+      const idCol = cols.find(c => c.COLUMN_NAME === 'id');
+      if (!idCol) {
+        logger.warn(`bootstrapService: ${table} has no 'id' column; skipping`);
+        continue;
+      }
+
+      // Make id NOT NULL if necessary
+      if (idCol.IS_NULLABLE === 'YES') {
+        try {
+          await q(`ALTER TABLE ${table} MODIFY id INT NOT NULL`);
+        } catch (err) {
+          logger.warn(`bootstrapService: failed to set id NOT NULL on ${table}: ${err.message}`);
+        }
+      }
+
+      // Ensure an index exists on id (auto_increment column must be indexed)
+      const idIndexed = idCol.COLUMN_KEY && idCol.COLUMN_KEY !== '';
+      if (!idIndexed) {
+        const idxName = `idx_${table}_id`;
+        try {
+          await q(`ALTER TABLE ${table} ADD INDEX ${idxName} (id)`);
+        } catch (err) {
+          logger.warn(`bootstrapService: failed to add index ${idxName} on ${table}: ${err.message}`);
+        }
+      }
+
+      // Finally set auto_increment on id
+      await q(`ALTER TABLE ${table} MODIFY id INT NOT NULL AUTO_INCREMENT`);
+      logger.info(`bootstrapService: ensured AUTO_INCREMENT on ${table}.id`);
+    } catch (error) {
+      logger.warn(`bootstrapService: failed to alter table ${table} for AUTO_INCREMENT: ${error.message}`);
+    }
+  }
+}
+
 let bootstrapPromise = null;
 let bootstrapRetryInterval = null;
 
@@ -324,7 +377,6 @@ async function retryBootstrapInBackground() {
 
   bootstrapRetryInterval = setInterval(async () => {
     try {
-      // First, ensure all required tables exist
       if (migrateDatabase) {
         const migrationResult = await migrateDatabase();
         if (!migrationResult.success) {
@@ -333,6 +385,7 @@ async function retryBootstrapInBackground() {
       }
 
       await ensureCoreTables();
+      await ensureAutoIncrement();
       await ensureSettingsShape();
       await ensureSoftDeleteColumns();
       await ensureTenantColumns();
@@ -340,7 +393,7 @@ async function retryBootstrapInBackground() {
       if (ensureTicketingSchema) {
         await ensureTicketingSchema();
       }
-      // Upgrade default tenant public_id from legacy 'tenant_default' to a real UUID
+
       await ensureTenantPublicId(1).catch(e =>
         logger.warn('bootstrapService: could not upgrade tenant public_id: ' + e.message)
       );
@@ -361,7 +414,6 @@ async function ensureBootstrap() {
 
   bootstrapPromise = (async () => {
     try {
-      // First, ensure all required tables exist
       if (migrateDatabase) {
         logger.info('bootstrapService: starting database migration...');
         const migrationResult = await migrateDatabase();
@@ -375,6 +427,7 @@ async function ensureBootstrap() {
       }
 
       await ensureCoreTables();
+      await ensureAutoIncrement();
       await ensureSettingsShape();
       await ensureSoftDeleteColumns();
       await ensureTenantColumns();
@@ -382,7 +435,7 @@ async function ensureBootstrap() {
       if (ensureTicketingSchema) {
         await ensureTicketingSchema();
       }
-      // Upgrade default tenant public_id from legacy 'tenant_default' to a real UUID
+
       await ensureTenantPublicId(1).catch(e =>
         logger.warn('bootstrapService: could not upgrade tenant public_id: ' + e.message)
       );
@@ -393,7 +446,6 @@ async function ensureBootstrap() {
       return { success: true };
     } catch (error) {
       logger.error('bootstrapService: initial bootstrap failed: ' + error.message + ' - starting background retry');
-      // Start background retry instead of throwing
       retryBootstrapInBackground();
       return { success: false, error };
     }
