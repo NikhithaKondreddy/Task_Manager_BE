@@ -147,4 +147,8 @@ router.get('/:id/escalation-history', requireRole(['Employee', 'Manager', 'Admin
   }
 });
 
+// Pass-through: let /:id/comments be handled by the next router (Tasks.js)
+router.get('/:id/comments', (req, res, next) => next());
+router.post('/:id/comments', (req, res, next) => next());
+
 module.exports = router;

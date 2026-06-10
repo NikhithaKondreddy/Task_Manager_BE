@@ -3124,6 +3124,68 @@ router.get('/taskdropdownfortaskHrs', asyncHandler(getTenantTaskHourDropdown));
 router.get('/gettaskss', asyncHandler(listTenantTasks));
 router.get('/', asyncHandler(listTenantTasks));
 
+// GET /:id/comments - accessible by Admin, Manager, Employee
+router.get('/:id/comments', requireRole(['Admin', 'Manager', 'Employee']), asyncHandler(async (req, res) => {
+  const tenantId = assertTenantId(req);
+  const task = await resolveTenantTask(req.params.id, tenantId);
+  if (!task) return res.status(404).json({ success: false, error: 'Task not found' });
+  if (!await canReadTenantTask(task, req)) return res.status(403).json({ success: false, error: 'Not authorized to view comments for this task' });
+
+  await ensureTaskCommentsTable();
+
+  const comments = await q(`
+    SELECT tc.id, tc.task_id, tc.comment, tc.created_at AS createdAt,
+           u.public_id AS user_public_id, u.name AS user_name, u.role AS user_role
+    FROM task_comments tc
+    JOIN users u ON tc.user_id = u._id
+    WHERE tc.task_id = ?
+    ORDER BY tc.created_at ASC
+  `, [task.id]);
+
+  res.json({ success: true, data: comments });
+}));
+
+// POST /:id/comments - accessible by Admin, Manager
+router.post('/:id/comments', requireRole(['Admin', 'Manager']), asyncHandler(async (req, res) => {
+  const tenantId = assertTenantId(req);
+  const task = await resolveTenantTask(req.params.id, tenantId);
+  if (!task) return res.status(404).json({ success: false, error: 'Task not found' });
+
+  const { comment } = req.body;
+  if (!comment || typeof comment !== 'string' || !comment.trim()) {
+    return res.status(400).json({ success: false, error: 'Comment content is required' });
+  }
+
+  await ensureTaskCommentsTable();
+
+  const result = await q(`
+    INSERT INTO task_comments (task_id, user_id, comment, created_at)
+    VALUES (?, ?, ?, NOW())
+  `, [task.id, req.user._id, comment.trim()]);
+
+  try {
+    await ensureTaskActivitiesTable();
+    await q(`
+      INSERT INTO task_logs (task_id, user_id, type, activity_text, created_at)
+      VALUES (?, ?, ?, ?, NOW())
+    `, [task.id, req.user._id, 'Commented', `${req.user.name} added a comment: "${comment.trim().substring(0, 50)}${comment.trim().length > 50 ? '...' : ''}"`]);
+  } catch (logErr) {
+    logger.warn('Failed to log comment activity: ' + logErr.message);
+  }
+
+  emitTaskUpdatedEvent(task.public_id, tenantId, { action: 'comment_added' });
+
+  const [newComment] = await q(`
+    SELECT tc.id, tc.task_id, tc.comment, tc.created_at AS createdAt,
+           u.public_id AS user_public_id, u.name AS user_name, u.role AS user_role
+    FROM task_comments tc
+    JOIN users u ON tc.user_id = u._id
+    WHERE tc.id = ?
+  `, [result.insertId]);
+
+  res.status(201).json({ success: true, data: newComment });
+}));
+
 router.put('/updatetask/:id', taskLockCheckMiddleware, requireRole(['Admin', 'Manager']), asyncHandler(updateTenantTask));
 router.put('/:id', taskLockCheckMiddleware, requireRole(['Admin', 'Manager']), asyncHandler(updateTenantTask));
 
@@ -3231,11 +3293,11 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       ));
 
       const activities = await new Promise((resolve, reject) => db.query(
-        `SELECT ta.task_id, ta.type, ta.activity, ta.createdAt AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
+        `SELECT ta.task_id, ta.type, ta.activity_text AS activity, ta.created_at AS createdAt, u._id AS user_id, u.public_id AS user_public_id, u.name AS user_name
          FROM task_logs ta
          LEFT JOIN users u ON ta.user_id = u._id
          WHERE ta.task_id IN (?)
-         ORDER BY ta.createdAt DESC`,
+         ORDER BY ta.created_at DESC`,
         [internalIds], (e, r) => e ? reject(e) : resolve(r)
       ));
 
@@ -6071,13 +6133,13 @@ router.get("/taskdetail/getactivity/:id", async (req, res) => {
     const sql = `
       SELECT 
         ta.type, 
-        ta.activity, 
-        ta.createdAt AS createdAt, 
+        ta.activity_text AS activity, 
+        ta.created_at AS createdAt, 
         u.name AS user_name
       FROM task_logs ta
       INNER JOIN users u ON ta.user_id = u._id
       WHERE ta.task_id = ?
-      ORDER BY ta.createdAt DESC
+      ORDER BY ta.created_at DESC
     `;
 
     db.query(sql, [id], (err, result) => {
@@ -6742,6 +6804,151 @@ router.get('/:taskId/assignments', async (req, res) => {
 
     res.json({ success: true, data: assignments });
   } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// ─── Task Comments ────────────────────────────────────────────────────────────
+
+// Ensure task_comments table exists with correct schema
+async function ensureTaskCommentsTable() {
+  try {
+    // Create if not exists
+    await q(`
+      CREATE TABLE IF NOT EXISTS task_comments (
+        id          INT NOT NULL AUTO_INCREMENT,
+        task_id     INT NOT NULL,
+        user_id     INT NOT NULL,
+        comment     TEXT NOT NULL,
+        tenant_id   INT NULL,
+        created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        PRIMARY KEY (id)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    `);
+  } catch (e) {
+    // Table might already exist with wrong schema — try to fix it
+    try {
+      // Check if id column has AUTO_INCREMENT
+      const cols = await q(`SHOW COLUMNS FROM task_comments WHERE Field = 'id'`);
+      const idCol = cols && cols[0];
+      if (idCol && !String(idCol.Extra || '').includes('auto_increment')) {
+        // Drop and recreate since AUTO_INCREMENT can't easily be added after the fact without PK
+        await q(`DROP TABLE IF EXISTS task_comments`);
+        await q(`
+          CREATE TABLE task_comments (
+            id          INT NOT NULL AUTO_INCREMENT,
+            task_id     INT NOT NULL,
+            user_id     INT NOT NULL,
+            comment     TEXT NOT NULL,
+            tenant_id   INT NULL,
+            created_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (id)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        `);
+        logger.info('task_comments table recreated with correct AUTO_INCREMENT schema');
+      }
+    } catch (fixErr) {
+      logger.warn('ensureTaskCommentsTable fix attempt: ' + fixErr.message);
+    }
+  }
+}
+
+// GET /api/tasks/:id/comments
+router.get('/:id/comments', async (req, res) => {
+  try {
+    await ensureTaskCommentsTable();
+    const tenantId = req.tenantId;
+    const { id: taskPublicId } = req.params;
+
+    // Resolve task internal id from public_id
+    const taskRows = await q(
+      'SELECT id FROM tasks WHERE public_id = ? AND tenant_id = ? LIMIT 1',
+      [taskPublicId, tenantId]
+    );
+    if (!taskRows || taskRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    const taskId = taskRows[0].id;
+
+    const comments = await q(
+      `SELECT tc.id, tc.comment, tc.created_at AS createdAt,
+              u.name AS user_name, u.role AS user_role, u.public_id AS user_public_id
+       FROM task_comments tc
+       JOIN users u ON u._id = tc.user_id
+       WHERE tc.task_id = ?
+       ORDER BY tc.created_at ASC`,
+      [taskId]
+    );
+
+    res.json({ success: true, data: comments || [] });
+  } catch (e) {
+    logger.error('GET task comments error: ' + e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// POST /api/tasks/:id/comments
+router.post('/:id/comments', async (req, res) => {
+  try {
+    await ensureTaskCommentsTable();
+    const tenantId = req.tenantId;
+    const { id: taskPublicId } = req.params;
+    const { comment } = req.body || {};
+
+    if (!comment || !String(comment).trim()) {
+      return res.status(400).json({ success: false, error: 'Comment text is required' });
+    }
+
+    // Only Admin and Manager can post comments
+    const userRole = normalizeTaskRole(req.user && req.user.role ? req.user.role : '');
+    if (userRole !== 'ADMIN' && userRole !== 'SUPER_ADMIN' && userRole !== 'MANAGER') {
+      return res.status(403).json({ success: false, error: 'Only Admins and Managers can post comments' });
+    }
+
+    // Resolve task internal id
+    const taskRows = await q(
+      'SELECT id FROM tasks WHERE public_id = ? AND tenant_id = ? LIMIT 1',
+      [taskPublicId, tenantId]
+    );
+    if (!taskRows || taskRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    const taskId = taskRows[0].id;
+
+    // Resolve user internal id
+    const userId = req.user._id;
+
+    const result = await q(
+      'INSERT INTO task_comments (task_id, user_id, comment, tenant_id) VALUES (?, ?, ?, ?)',
+      [taskId, userId, String(comment).trim(), tenantId]
+    );
+
+    const newCommentId = result.insertId;
+
+    // Fetch the newly created comment with user info
+    const newRows = await q(
+      `SELECT tc.id, tc.comment, tc.created_at AS createdAt,
+              u.name AS user_name, u.role AS user_role, u.public_id AS user_public_id
+       FROM task_comments tc
+       JOIN users u ON u._id = tc.user_id
+       WHERE tc.id = ? LIMIT 1`,
+      [newCommentId]
+    );
+
+    const newComment = newRows && newRows[0] ? newRows[0] : {
+      id: newCommentId,
+      comment: String(comment).trim(),
+      createdAt: new Date().toISOString(),
+      user_name: req.user.name || 'Unknown',
+      user_role: req.user.role || '',
+      user_public_id: req.user.public_id || req.user.id || null
+    };
+
+    res.json({ success: true, data: newComment });
+  } catch (e) {
+    logger.error('POST task comment error: ' + e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });
