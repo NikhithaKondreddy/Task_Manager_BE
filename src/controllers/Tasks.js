@@ -1211,18 +1211,21 @@ async function loadTaskAssignmentsForTenant(taskId, tenantId) {
   }
   sql += ' ORDER BY u.name ASC';
   const rows = await q(sql, params);
-    const queryTime = Date.now();
-    return (rows || []).map((row) => {
-      const storedDuration = Number(row.user_total_duration || 0);
-      const liveTimerRaw = row.user_live_timer ? new Date(row.user_live_timer) : null;
-      const assigneeStatus = normalizeTaskLifecycleStatus(row.user_status || 'PENDING');
-      // Compute running total: only add elapsed when actively IN_PROGRESS with a live_timer
-      let liveTotalSeconds = storedDuration;
-      if (assigneeStatus === 'IN_PROGRESS' && liveTimerRaw) {
-        const elapsed = Math.max(0, Math.floor((queryTime - liveTimerRaw.getTime()) / 1000));
-        liveTotalSeconds = storedDuration + elapsed;
-      }
-      return {
+  const queryTime = Date.now();
+  const merged = new Map();
+  for (const row of (rows || [])) {
+    const storedDuration = Number(row.user_total_duration || 0);
+    const liveTimerRaw = row.user_live_timer ? new Date(row.user_live_timer) : null;
+    const assigneeStatus = normalizeTaskLifecycleStatus(row.user_status || 'PENDING');
+    let liveTotalSeconds = storedDuration;
+    if (assigneeStatus === 'IN_PROGRESS' && liveTimerRaw) {
+      const elapsed = Math.max(0, Math.floor((queryTime - liveTimerRaw.getTime()) / 1000));
+      liveTotalSeconds = storedDuration + elapsed;
+    }
+
+    const key = String(row._id);
+    if (!merged.has(key)) {
+      merged.set(key, {
         id: row.public_id || String(row._id),
         internalId: String(row._id),
         name: row.name || null,
@@ -1239,8 +1242,39 @@ async function loadTaskAssignmentsForTenant(taskId, tenantId) {
         live_total_hhmmss: formatDuration(liveTotalSeconds),
         rejection_reason: row.user_rejection_reason || null,
         checklist: row.checklist ? JSON.parse(row.checklist) : []
-      };
-    });
+      });
+    } else {
+      const existing = merged.get(key);
+      // Merge numeric totals by taking the max to avoid accidental truncation
+      existing.total_duration = Math.max(existing.total_duration || 0, storedDuration);
+      existing.live_total_seconds = Math.max(existing.live_total_seconds || 0, liveTotalSeconds);
+      existing.live_total_hours = Number((existing.live_total_seconds / 3600).toFixed(2));
+      existing.live_total_hhmmss = formatDuration(existing.live_total_seconds);
+      if (!existing.started_at && row.user_started_at) existing.started_at = new Date(row.user_started_at).toISOString();
+      if (!existing.live_timer && liveTimerRaw) existing.live_timer = liveTimerRaw.toISOString();
+      if (!existing.completed_at && row.user_completed_at) existing.completed_at = new Date(row.user_completed_at).toISOString();
+      if (!existing.rejection_reason && row.user_rejection_reason) existing.rejection_reason = row.user_rejection_reason;
+      if (!existing.name && row.name) existing.name = row.name;
+      if (!existing.email && row.email) existing.email = row.email;
+      if (!existing.role && row.role) existing.role = row.role;
+      existing.readOnly = existing.readOnly || Number(row.is_read_only || 0) === 1;
+      // Merge checklist arrays deduplicating items by JSON representation
+      try {
+        const existingChecklist = Array.isArray(existing.checklist) ? existing.checklist : [];
+        const rowChecklist = row.checklist ? JSON.parse(row.checklist) : [];
+        const mergedChecklist = [...existingChecklist];
+        for (const item of rowChecklist) {
+          if (!mergedChecklist.find((x) => JSON.stringify(x) === JSON.stringify(item))) mergedChecklist.push(item);
+        }
+        existing.checklist = mergedChecklist;
+      } catch (e) {
+        // ignore parse errors and keep existing checklist
+      }
+      merged.set(key, existing);
+    }
+  }
+
+  return Array.from(merged.values());
 }
 
 async function canReadTenantTask(task, req) {
@@ -1622,9 +1656,13 @@ async function listTenantTasks(req, res) {
       liveTotalSeconds = storedDuration + elapsed;
     }
     const assigneeDisplayStatus = assigneeStatus === 'APPROVED' ? 'COMPLETED' : assigneeStatus;
-    assignmentMap[key].push({
+
+    // Deduplicate by user within each task and merge timer/status fields when duplicates exist
+    const userKey = String(row._id);
+    const existingIndex = assignmentMap[key].findIndex((a) => String(a.internalId) === userKey);
+    const newAssignee = {
       id: row.public_id || String(row._id),
-      internalId: String(row._id),
+      internalId: userKey,
       name: row.name || null,
       email: row.email || null,
       role: row.role || null,
@@ -1638,7 +1676,28 @@ async function listTenantTasks(req, res) {
       live_total_hours: Number((liveTotalSeconds / 3600).toFixed(2)),
       live_total_hhmmss: formatDuration(liveTotalSeconds),
       rejection_reason: row.user_rejection_reason || null
-    });
+    };
+
+    if (existingIndex === -1) {
+      assignmentMap[key].push(newAssignee);
+    } else {
+      const existing = assignmentMap[key][existingIndex];
+      existing.total_duration = Math.max(existing.total_duration || 0, storedDuration);
+      existing.live_total_seconds = Math.max(existing.live_total_seconds || 0, liveTotalSeconds);
+      existing.live_total_hours = Number((existing.live_total_seconds / 3600).toFixed(2));
+      existing.live_total_hhmmss = formatDuration(existing.live_total_seconds);
+      if (!existing.started_at && newAssignee.started_at) existing.started_at = newAssignee.started_at;
+      if (!existing.live_timer && newAssignee.live_timer) existing.live_timer = newAssignee.live_timer;
+      if (!existing.completed_at && newAssignee.completed_at) existing.completed_at = newAssignee.completed_at;
+      if (!existing.rejection_reason && newAssignee.rejection_reason) existing.rejection_reason = newAssignee.rejection_reason;
+      if (!existing.name && newAssignee.name) existing.name = newAssignee.name;
+      if (!existing.email && newAssignee.email) existing.email = newAssignee.email;
+      if (!existing.role && newAssignee.role) existing.role = newAssignee.role;
+      existing.readOnly = existing.readOnly || newAssignee.readOnly;
+      // Prefer more advanced status when merging
+      const statusPriority = { 'IN_PROGRESS': 4, 'ON_HOLD': 3, 'REVIEW': 2, 'PENDING': 1, 'TODO': 1, 'COMPLETED': 5, 'APPROVED': 5, 'REJECTED': 1 };
+      existing.status = (statusPriority[newAssignee.status] || 0) > (statusPriority[existing.status] || 0) ? newAssignee.status : existing.status;
+    }
   });
 
   const hasReassignmentTenantId = await hasColumn('task_resign_requests', 'tenant_id');
@@ -2343,6 +2402,12 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
     TODO: ['IN_PROGRESS']
   };
   const nextUserStatuses = allowedUserTransitions[currentUserStatus] || [];
+
+  // If the requested status equals the current user assignment status, treat as no-op and return current task envelope
+  if (requestedStatus === currentUserStatus) {
+    const taskResponse = await loadTenantTaskEnvelope(task.id, tenantId, req);
+    return res.json({ success: true, message: 'Status unchanged', data: taskResponse });
+  }
 
   if (requestedStatus === 'COMPLETED' || requestedStatus === 'APPROVED') {
     return res.status(400).json({
@@ -6949,6 +7014,46 @@ router.post('/:id/comments', async (req, res) => {
     res.json({ success: true, data: newComment });
   } catch (e) {
     logger.error('POST task comment error: ' + e.message);
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+// DELETE /api/tasks/:id/comments/:commentId
+router.delete('/:id/comments/:commentId', async (req, res) => {
+  try {
+    const tenantId = req.tenantId;
+    const { id: taskPublicId, commentId } = req.params;
+
+    // Resolve task internal id
+    const taskRows = await q(
+      'SELECT id FROM tasks WHERE public_id = ? AND tenant_id = ? LIMIT 1',
+      [taskPublicId, tenantId]
+    );
+    if (!taskRows || taskRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Task not found' });
+    }
+    const taskId = taskRows[0].id;
+
+    // Only Admin can delete comments
+    const userRole = normalizeTaskRole(req.user && req.user.role ? req.user.role : '');
+    if (userRole !== 'ADMIN' && userRole !== 'SUPER_ADMIN') {
+      return res.status(403).json({ success: false, error: 'Only Admins can delete comments' });
+    }
+
+    // Verify comment exists and belongs to this task
+    const commentRows = await q(
+      'SELECT id FROM task_comments WHERE id = ? AND task_id = ? AND tenant_id = ? LIMIT 1',
+      [commentId, taskId, tenantId]
+    );
+    if (!commentRows || commentRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Comment not found' });
+    }
+
+    await q('DELETE FROM task_comments WHERE id = ?', [commentId]);
+
+    res.json({ success: true, message: 'Comment deleted successfully' });
+  } catch (e) {
+    logger.error('DELETE task comment error: ' + e.message);
     res.status(500).json({ success: false, error: e.message });
   }
 });

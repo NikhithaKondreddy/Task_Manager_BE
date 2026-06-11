@@ -1,0 +1,26 @@
+HTTP/1.1 200 OK
+Content-Security-Policy: default-src 'self';base-uri 'self';font-src 'self' https: data:;form-action 'self';frame-ancestors 'self';img-src 'self' data:;object-src 'none';script-src 'self';script-src-attr 'none';style-src 'self' https: 'unsafe-inline';upgrade-insecure-requests
+Cross-Origin-Opener-Policy: same-origin
+Cross-Origin-Resource-Policy: cross-origin
+Origin-Agent-Cluster: ?1
+Referrer-Policy: no-referrer
+Strict-Transport-Security: max-age=31536000; includeSubDomains
+X-Content-Type-Options: nosniff
+X-DNS-Prefetch-Control: off
+X-Download-Options: noopen
+X-Frame-Options: SAMEORIGIN
+X-Permitted-Cross-Domain-Policies: none
+X-XSS-Protection: 0
+RateLimit-Policy: 5000;w=900
+RateLimit-Limit: 5000
+RateLimit-Remaining: 4999
+RateLimit-Reset: 900
+Access-Control-Allow-Origin: *
+x-tenant-id: 401267cb-a435-42d2-a0d5-556d3ec050a8
+Content-Type: application/pdf
+Content-Disposition: attachment; filename="employeeep.pdf"
+Date: Wed, 10 Jun 2026 11:38:01 GMT
+Connection: keep-alive
+Keep-Alive: timeout=5
+Transfer-Encoding: chunked
+

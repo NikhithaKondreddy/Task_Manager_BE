@@ -4,8 +4,8 @@
 const buildRuleContext = (req, user, resource = {}) => {
   const context = {
     userId: user ? user._id : null,
-    userRole: user ? user.role : null,
-    userDepartment: user ? user.department : null,
+    userRole: user ? (typeof user.role === 'string' ? user.role.toString().toUpperCase() : user.role) : null,
+    userDepartment: user ? (typeof user.department === 'string' ? user.department.toString().toUpperCase() : user.department) : null,
     resourceOwnerId: resource.ownerId || resource.userId || null,
     resourceId: resource.id || (req.params && req.params.id) || null,
 

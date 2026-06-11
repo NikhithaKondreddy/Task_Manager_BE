@@ -661,10 +661,33 @@ module.exports = {
       if (!allowed) return res.status(403).json(errorResponse.forbidden('Access denied', 'FORBIDDEN'));
 
       // Serve
-      const handle = await storageService.getDownloadHandle({ storagePath: doc.filePath });
-      if (handle.redirectUrl) return res.redirect(handle.redirectUrl);
-      // ...
-      return res.status(200).send("Serving file " + doc.fileName);
+      const handle = await storageService.getDownloadHandle({ storagePath: doc.filePath }).catch(() => null);
+
+      // If storage returned a signed redirect (S3), redirect the client
+      if (handle && handle.redirectUrl) return res.redirect(handle.redirectUrl);
+
+      // If storage returned a readable stream, pipe it to the response with proper headers
+      if (handle && handle.stream) {
+        const stream = handle.stream;
+        const filename = (doc.fileName || 'download').replace(/"/g, '');
+        try {
+          res.setHeader('Content-Type', doc.mimeType || 'application/pdf');
+          res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        } catch (e) {}
+        stream.on('error', (err) => next(err));
+        return stream.pipe(res);
+      }
+
+      // If storage exposed a publicPath, redirect there
+      if (handle && handle.publicPath) return res.redirect(handle.publicPath);
+
+      // Last-resort: redirect to the known filePath (served by express static)
+      if (doc.filePath && typeof doc.filePath === 'string') {
+        const publicPath = doc.filePath.startsWith('/') ? doc.filePath : '/' + doc.filePath;
+        return res.redirect(publicPath);
+      }
+
+      return res.status(404).json(errorResponse.notFound('File not found', 'NOT_FOUND'));
     } catch (e) { next(e); }
   },
 

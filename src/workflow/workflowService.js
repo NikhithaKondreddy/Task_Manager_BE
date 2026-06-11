@@ -58,6 +58,25 @@ const hasColumn = async (table, column) => {
     }
 };
 
+const _columnExtraCache = {};
+const columnHasExtra = async (table, column, extraFragment) => {
+    const key = `${table}::${column}::${extraFragment}`;
+    if (_columnExtraCache[key] !== undefined) return _columnExtraCache[key];
+    try {
+        const rows = await q(`
+            SELECT EXTRA FROM INFORMATION_SCHEMA.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ?
+        `, [table, column]);
+        const extra = Array.isArray(rows) && rows[0] && rows[0].EXTRA ? String(rows[0].EXTRA).toLowerCase() : '';
+        _columnExtraCache[key] = extra.includes(String(extraFragment).toLowerCase());
+        return _columnExtraCache[key];
+    } catch (e) {
+        _columnExtraCache[key] = false;
+        return false;
+    }
+};
+
+
 const normalizeDbStatus = (value) => String(value == null ? '' : value)
     .trim()
     .replace(/\s+/g, '_')
@@ -101,7 +120,51 @@ const ensureWorkflowTables = async () => {
             }
         }
     }
+    
+            // Ensure `workflow_requests.id` is an AUTO_INCREMENT primary key when table exists but was created without it
+            try {
+                const hasAuto = await columnHasExtra('workflow_requests', 'id', 'auto_increment');
+                if (!hasAuto) {
+                    logger.info('Patching workflow_requests.id to be AUTO_INCREMENT if possible');
+                    try {
+                        const pkRows = await q(`
+                            SELECT COUNT(*) as pkcount
+                            FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                            WHERE tc.TABLE_SCHEMA = DATABASE() AND tc.TABLE_NAME = 'workflow_requests' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                        `);
+                        const pkcount = pkRows && pkRows[0] && pkRows[0].pkcount ? Number(pkRows[0].pkcount) : 0;
+                        if (pkcount === 0) {
+                            try {
+                                await q('ALTER TABLE workflow_requests ADD PRIMARY KEY (id)');
+                            } catch (addPkErr) {
+                                logger.warn('Could not add PRIMARY KEY to workflow_requests.id: ' + addPkErr.message);
+                            }
+                        }
+                    } catch (pkErr) {
+                        logger.warn('Error while checking/adding PRIMARY KEY for workflow_requests: ' + pkErr.message);
+                    }
 
+                    try {
+                        const maxRow = await q('SELECT MAX(id) as maxid FROM workflow_requests');
+                        const next = maxRow && maxRow[0] && maxRow[0].maxid ? (Number(maxRow[0].maxid) + 1) : 1;
+                        try {
+                            await q('ALTER TABLE workflow_requests MODIFY `id` int NOT NULL AUTO_INCREMENT');
+                        } catch (modErr) {
+                            logger.warn('Failed to modify workflow_requests.id to AUTO_INCREMENT: ' + modErr.message);
+                        }
+                        try {
+                            await q('ALTER TABLE workflow_requests AUTO_INCREMENT = ?', [next]);
+                        } catch (aiErr) {
+                            logger.warn('Failed to set AUTO_INCREMENT value for workflow_requests: ' + aiErr.message);
+                        }
+                        logger.info('Ensured workflow_requests.id AUTO_INCREMENT with next value ' + next);
+                    } catch (err) {
+                        logger.warn('[WARN] ensureWorkflowTables: unable to set AUTO_INCREMENT on workflow_requests.id: ' + err.message);
+                    }
+                }
+            } catch (err) {
+                logger.warn('[WARN] ensureWorkflowTables: failed to ensure auto_increment for workflow_requests.id: ' + (err && err.message));
+            }
     // Workflow logs table creation commented out - table was dropped during cleanup
     // try {
     //     await q('SELECT 1 FROM workflow_logs LIMIT 1');
@@ -159,6 +222,51 @@ const ensureWorkflowTables = async () => {
                 logger.warn('Failed to create workflow table: ' + createErr.message);
             }
         }
+    }
+
+    // Ensure `workflow.id` is an AUTO_INCREMENT primary key when table exists but was created without it
+    try {
+        const hasAutoWorkflow = await columnHasExtra('workflow', 'id', 'auto_increment');
+        if (!hasAutoWorkflow) {
+            logger.info('Patching workflow.id to be AUTO_INCREMENT if possible');
+            try {
+                const pkRows = await q(`
+                    SELECT COUNT(*) as pkcount
+                    FROM INFORMATION_SCHEMA.TABLE_CONSTRAINTS tc
+                    WHERE tc.TABLE_SCHEMA = DATABASE() AND tc.TABLE_NAME = 'workflow' AND tc.CONSTRAINT_TYPE = 'PRIMARY KEY'
+                `);
+                const pkcount = pkRows && pkRows[0] && pkRows[0].pkcount ? Number(pkRows[0].pkcount) : 0;
+                if (pkcount === 0) {
+                    try {
+                        await q('ALTER TABLE workflow ADD PRIMARY KEY (id)');
+                    } catch (addPkErr) {
+                        logger.warn('Could not add PRIMARY KEY to workflow.id: ' + addPkErr.message);
+                    }
+                }
+            } catch (pkErr) {
+                logger.warn('Error while checking/adding PRIMARY KEY for workflow: ' + pkErr.message);
+            }
+
+            try {
+                const maxRow = await q('SELECT MAX(id) as maxid FROM workflow');
+                const next = maxRow && maxRow[0] && maxRow[0].maxid ? (Number(maxRow[0].maxid) + 1) : 1;
+                try {
+                    await q('ALTER TABLE workflow MODIFY `id` int NOT NULL AUTO_INCREMENT');
+                } catch (modErr) {
+                    logger.warn('Failed to modify workflow.id to AUTO_INCREMENT: ' + modErr.message);
+                }
+                try {
+                    await q('ALTER TABLE workflow AUTO_INCREMENT = ?', [next]);
+                } catch (aiErr) {
+                    logger.warn('Failed to set AUTO_INCREMENT value for workflow: ' + aiErr.message);
+                }
+                logger.info('Ensured workflow.id AUTO_INCREMENT with next value ' + next);
+            } catch (err) {
+                logger.warn('[WARN] ensureWorkflowTables: unable to set AUTO_INCREMENT on workflow.id: ' + err.message);
+            }
+        }
+    } catch (err) {
+        logger.warn('[WARN] ensureWorkflowTables: failed to ensure auto_increment for workflow.id: ' + (err && err.message));
     }
 
     try {

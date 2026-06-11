@@ -88,8 +88,21 @@ const ruleEngineMiddleware = (ruleCode = null) => {
     } catch (error) {
       let logger;
       try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../logger'); } catch (e2) { logger = console; } }
-      logger.error('Rule Engine Middleware Error:', error);
-      return res.status(500).json({ success: false, error: 'Rule evaluation failed' });
+      logger.error('Rule Engine Middleware Error:', error && (error.stack || error.message || error));
+
+      // Fail-safe behavior: avoid returning 500 due to rule engine issues.
+      // Permit privileged roles to continue, deny others with a clear 403 response.
+      try {
+        const role = req && req.user && (req.user.role || '').toLowerCase();
+        if (role === 'admin' || role === 'manager' || role === 'superadmin') {
+          logger.warn('Rule Engine failure: allowing privileged user to continue', { userId: req.user && req.user._id, role });
+          return next();
+        }
+      } catch (e) {
+        // ignore
+      }
+
+      return res.status(403).json({ success: false, error: 'Access denied (rule evaluation error)', code: 'RULE_EVAL_ERROR' });
     }
   };
 };

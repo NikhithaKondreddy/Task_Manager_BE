@@ -14,26 +14,55 @@ class JsonRuleEngine {
   async loadRules() {
     if (this.loaded) return;
     const query = 'SELECT * FROM business_rules WHERE active = 1 ORDER BY priority ASC';
-    const rows = await new Promise((resolve, reject) => {
-      db.query(query, (err, results) => {
-        if (err) return reject(err);
-        resolve(results);
+    try {
+      const rows = await new Promise((resolve, reject) => {
+        db.query(query, (err, results) => {
+          if (err) return reject(err);
+          resolve(results);
+        });
       });
-    });
 
-    this.rules = rows.map(r => ({
-      id: r.id,
-      ruleCode: r.rule_code,
-      description: r.description,
-      conditions: typeof r.conditions === 'string' ? JSON.parse(r.conditions) : r.conditions,
-      action: r.action, // ALLOW / DENY / REQUIRE_APPROVAL / MODIFY
-      priority: r.priority || 100,
-      active: !!r.active,
-      version: r.version || '1.0'
-    }));
+      if (rows && rows.length > 0) {
+        this.rules = rows.map(r => ({
+          id: r.id,
+          ruleCode: r.rule_code,
+          description: r.description,
+          conditions: typeof r.conditions === 'string' ? JSON.parse(r.conditions) : r.conditions,
+          action: r.action, // ALLOW / DENY / REQUIRE_APPROVAL / MODIFY
+          priority: r.priority || 100,
+          active: !!r.active,
+          version: r.version || '1.0'
+        }));
 
-    this.loaded = true;
-    logger.info(`JsonRuleEngine: loaded ${this.rules.length} rules`);
+        this.loaded = true;
+        logger.info(`JsonRuleEngine: loaded ${this.rules.length} rules from DB`);
+        return;
+      }
+    } catch (e) {
+      logger.warn('JsonRuleEngine: failed to load rules from DB, will attempt local fallback', e && e.message);
+    }
+
+    // Fallback: load built-in rules from local file if DB is empty or unavailable
+    try {
+      const localRules = require('./rules');
+      this.rules = (localRules || []).map(r => ({
+        id: r.ruleCode,
+        ruleCode: r.ruleCode,
+        description: r.description,
+        conditions: r.conditions,
+        action: r.action,
+        priority: r.priority || 100,
+        active: !!r.active,
+        version: r.version || '1.0'
+      }));
+      this.loaded = true;
+      logger.info(`JsonRuleEngine: loaded ${this.rules.length} rules from local file`);
+      return;
+    } catch (e) {
+      logger.error('JsonRuleEngine: no rules available (DB failure and local fallback failed)', e && e.message);
+      this.rules = [];
+      this.loaded = true;
+    }
   }
 
   flattenContext(obj, prefix = '', res = {}) {
@@ -216,11 +245,16 @@ class JsonRuleEngine {
     if (!this.loaded) await this.loadRules();
 
     const context = buildRuleContext(req, user, resource);
-
     let rulesToEvaluate = this.rules;
     if (ruleCode) {
       const byCode = this.rules.filter(r => r.ruleCode === ruleCode);
       if (byCode.length > 0) rulesToEvaluate = byCode;
+    }
+
+    try {
+      logger.info('JsonRuleEngine: evaluating', { ruleCode: ruleCode, action: context.action, userRole: context.userRole, resourceId: context.resourceId, candidates: rulesToEvaluate.length });
+    } catch (e) {
+      // ignore logging errors
     }
 
     const decision = await this.evaluateFromRules(rulesToEvaluate, context);

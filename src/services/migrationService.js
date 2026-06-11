@@ -348,6 +348,24 @@ async function ensureAutoIncrement(tableName, columnName = 'id', columnDef = 'BI
       return;
     }
 
+    // Check for duplicate values in the column to avoid ALTER failures (which can cause ER_DUP_ENTRY)
+    try {
+      const dupRows = await executeQuery(
+        `SELECT COUNT(1) AS total_count, COUNT(DISTINCT \`${columnName}\`) AS distinct_count FROM \`${tableName}\``,
+        [],
+        tableName
+      );
+      const total = dupRows && dupRows[0] && Number(dupRows[0].total_count || dupRows[0].total) || 0;
+      const distinct = dupRows && dupRows[0] && Number(dupRows[0].distinct_count || dupRows[0].distinct) || 0;
+      if (total > distinct) {
+        logger.warn(`Migration: table '${tableName}' has duplicate values in column '${columnName}', skipping AUTO_INCREMENT alteration to avoid data loss`);
+        return;
+      }
+    } catch (e) {
+      logger.warn(`Migration: could not verify duplicates for ${tableName}.${columnName}: ${e.message}`);
+      // proceed to attempt ALTER as a last resort
+    }
+
     // Attempt to alter the column to be AUTO_INCREMENT PRIMARY KEY
     const alterSql = `ALTER TABLE \`${tableName}\` MODIFY COLUMN \`${columnName}\` ${columnDef} NOT NULL AUTO_INCREMENT PRIMARY KEY`;
     await executeQuery(alterSql, [], tableName);
@@ -469,6 +487,28 @@ async function migrateDatabase() {
   try {
     await ensureAutoIncrement('audit_logs', 'id', 'BIGINT');
     await ensureAutoIncrement('notifications', 'id', 'BIGINT UNSIGNED');
+    // Ensure common app tables created from SQL dump have AUTO_INCREMENT
+    const autoIncrementTables = [
+      'tasks',
+      'subtasks',
+      'task_assignment_status',
+      'task_time_entries',
+      'task_logs',
+      'task_resign_requests',
+      'user_checklist_progress',
+      'attachments',
+      'document_access',
+      'tenants',
+      'tickets'
+    ];
+
+    for (const tbl of autoIncrementTables) {
+      try {
+        await ensureAutoIncrement(tbl, 'id', 'INT');
+      } catch (e) {
+        logger.warn(`Migration: ensureAutoIncrement failed for ${tbl}: ${e.message}`);
+      }
+    }
   } catch (error) {
     logger.warn(`Migration: could not ensure AUTO_INCREMENT on id columns: ${error.message}`);
   }
