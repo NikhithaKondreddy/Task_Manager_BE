@@ -23,7 +23,7 @@ module.exports = {
 
   createRole: async (req, res) => {
     try {
-      const data = await roleManagementService.createRole(req.user.tenant_id, req.body, req.user._id);
+      const data = await roleManagementService.createRole(req.user.tenant_id, req.body, req.user);
       res.status(201).json({ success: true, data });
     } catch (error) {
       res.status(400).json(errorResponse.badRequest(error.message, 'ROLE_CREATE_FAILED'));
@@ -56,6 +56,45 @@ module.exports = {
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
+    }
+  },
+
+  getPermission: async (req, res) => {
+    try {
+      const data = await roleManagementService.getPermissionById(req.user.tenant_id, req.params.id);
+      if (!data) return res.status(404).json(errorResponse.notFound('Permission not found', 'NOT_FOUND'));
+      res.json({ success: true, data });
+    } catch (error) {
+      res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
+    }
+  },
+
+  createPermission: async (req, res) => {
+    try {
+      const data = await roleManagementService.createPermission(req.user.tenant_id, req.body, req.user);
+      res.status(201).json({ success: true, data });
+    } catch (error) {
+      res.status(400).json(errorResponse.badRequest(error.message, 'PERMISSION_CREATE_FAILED'));
+    }
+  },
+
+  updatePermission: async (req, res) => {
+    try {
+      const data = await roleManagementService.updatePermission(req.user.tenant_id, req.params.id, req.body, req.user._id);
+      res.json({ success: true, data });
+    } catch (error) {
+      const status = error.message.includes('not found') ? 404 : 400;
+      res.status(status).json(errorResponse.badRequest(error.message, 'PERMISSION_UPDATE_FAILED'));
+    }
+  },
+
+  deletePermission: async (req, res) => {
+    try {
+      const data = await roleManagementService.deletePermission(req.user.tenant_id, req.params.id);
+      res.json({ success: true, data });
+    } catch (error) {
+      const status = error.message.includes('not found') ? 404 : 400;
+      res.status(status).json(errorResponse.badRequest(error.message, 'PERMISSION_DELETE_FAILED'));
     }
   }
 };

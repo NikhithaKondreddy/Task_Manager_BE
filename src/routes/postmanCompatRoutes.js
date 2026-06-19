@@ -158,4 +158,20 @@ router.delete('/approval-workflows/:id', requireAuth, requireRole(['Admin', 'Man
   }
 });
 
+// Compatibility endpoint: GET /api/activities?ticketId=...
+// Maps legacy calls to the modern ticket history controller
+router.get('/activities', requireAuth, async (req, res, next) => {
+  try {
+    const ticketId = req.query?.ticketId || req.query?.ticket_id || req.body?.ticketId || req.body?.ticket_id;
+    if (!ticketId) return res.status(400).json({ success: false, message: 'ticketId is required' });
+    // Delegate to ticket activity controller
+    req.params = req.params || {};
+    req.params.ticketId = ticketId;
+    const ticketActivityController = require('../modules/tickets/controllers/ticketActivityController');
+    return ticketActivityController.getHistory(req, res, next);
+  } catch (error) {
+    return next(error);
+  }
+});
+
 module.exports = router;

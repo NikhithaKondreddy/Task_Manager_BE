@@ -5,7 +5,7 @@ const { DEFAULT_SLA_POLICIES, TICKET_PRIORITIES } = require('../constants');
 const { normalizePriority } = require('../helpers/ticketUtils');
 
 async function listPolicies(tenantId) {
-  const rows = await query(
+  let rows = await query(
     `
       SELECT id, priority, response_time_minutes, resolution_time_minutes, escalation_time_minutes, is_active, created_at, updated_at
       FROM ticket_sla_policies
@@ -15,25 +15,41 @@ async function listPolicies(tenantId) {
     [tenantId]
   );
 
-  const existingByPriority = new Map(rows.map((row) => [String(row.priority).toUpperCase(), row]));
-  const merged = DEFAULT_SLA_POLICIES.map((policy) => existingByPriority.get(policy.priority) || {
-    id: null,
-    priority: policy.priority,
-    response_time_minutes: policy.response_time_minutes,
-    resolution_time_minutes: policy.resolution_time_minutes,
-    escalation_time_minutes: policy.escalation_time_minutes,
-    is_active: 1,
-    created_at: null,
-    updated_at: null,
-  });
-
-  rows.forEach((row) => {
-    if (!TICKET_PRIORITIES.includes(String(row.priority).toUpperCase())) {
-      merged.push(row);
+  if (rows.length === 0) {
+    for (const policy of DEFAULT_SLA_POLICIES) {
+      await query(
+        `
+          INSERT INTO ticket_sla_policies
+            (tenant_id, priority, response_time_minutes, resolution_time_minutes, escalation_time_minutes, is_active)
+          VALUES (?, ?, ?, ?, ?, 1)
+          ON DUPLICATE KEY UPDATE
+            response_time_minutes = VALUES(response_time_minutes),
+            resolution_time_minutes = VALUES(resolution_time_minutes),
+            escalation_time_minutes = VALUES(escalation_time_minutes),
+            is_active = VALUES(is_active)
+        `,
+        [
+          tenantId,
+          policy.priority,
+          policy.response_time_minutes,
+          policy.resolution_time_minutes,
+          policy.escalation_time_minutes,
+        ]
+      );
     }
-  });
 
-  return merged.map((row) => ({
+    rows = await query(
+      `
+        SELECT id, priority, response_time_minutes, resolution_time_minutes, escalation_time_minutes, is_active, created_at, updated_at
+        FROM ticket_sla_policies
+        WHERE tenant_id = ?
+        ORDER BY FIELD(priority, 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL')
+      `,
+      [tenantId]
+    );
+  }
+
+  return rows.map((row) => ({
     id: row.id,
     priority: String(row.priority).toUpperCase(),
     responseTimeMinutes: Number(row.response_time_minutes),
@@ -82,6 +98,14 @@ async function createPolicy(tenantId, payload, user) {
   if (![responseTimeMinutes, resolutionTimeMinutes, escalationTimeMinutes].every((value) => Number.isFinite(value) && value > 0)) {
     throw new HttpError(400, 'SLA times must be positive numbers', 'SLA_TIME_INVALID');
   }
+  // Prevent creating priority to a value that already exists for the tenant
+  const duplicate = await query(
+    `SELECT id FROM ticket_sla_policies WHERE tenant_id = ? AND UPPER(priority) = UPPER(?) LIMIT 1`,
+    [tenantId, priority]
+  );
+  if (Array.isArray(duplicate) && duplicate.length > 0) {
+    throw new HttpError(400, 'SLA policy for this priority already exists for this tenant', 'SLA_POLICY_DUPLICATE');
+  }
 
   const result = await query(
     `
@@ -123,12 +147,7 @@ async function createPolicy(tenantId, payload, user) {
 
 async function updatePolicy(tenantId, policyId, payload, user) {
   const rows = await query(
-    `
-      SELECT *
-      FROM ticket_sla_policies
-      WHERE tenant_id = ? AND id = ?
-      LIMIT 1
-    `,
+    `SELECT * FROM ticket_sla_policies WHERE tenant_id = ? AND id = ? LIMIT 1`,
     [tenantId, policyId]
   );
 
@@ -138,6 +157,14 @@ async function updatePolicy(tenantId, policyId, payload, user) {
   }
 
   const priority = payload.priority ? normalizePriority(payload.priority) : String(existing.priority).toUpperCase();
+
+  const duplicate = await query(
+    `SELECT id FROM ticket_sla_policies WHERE tenant_id = ? AND UPPER(priority) = UPPER(?) AND id != ? LIMIT 1`,
+    [tenantId, priority, policyId]
+  );
+  if (Array.isArray(duplicate) && duplicate.length > 0) {
+    throw new HttpError(400, 'SLA policy for this priority already exists for this tenant', 'SLA_POLICY_DUPLICATE');
+  }
   const responseTimeMinutes = payload.responseTimeMinutes !== undefined || payload.response_time_minutes !== undefined
     ? Number(payload.responseTimeMinutes || payload.response_time_minutes)
     : Number(existing.response_time_minutes);

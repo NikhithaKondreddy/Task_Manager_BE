@@ -31,8 +31,8 @@ const ruleEngineMiddleware = (ruleCode = null) => {
           const code = (ruleCode || '').toLowerCase();
 
           // Fallback rules for bootstrapping
-          if (role === 'admin') {
-            return next(); // Admins can do anything
+          if (role === 'admin' || role === 'superadmin' || role === 'super-admin') {
+            return next(); // Admins and Super Admins can do anything
           }
 
           // Creation rules

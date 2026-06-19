@@ -18,7 +18,8 @@ function deny(res, message) {
 function requireTicketViewAccess(req, res, next) {
   const { ticketRole, permissions } = withTicketPermissions(req);
   if (!ticketRole) return deny(res, 'Not allowed to view tickets');
-  if (!permissions.readAll && !permissions.readAssigned && !permissions.readOwn) {
+  // allow scoped reads (e.g., regional/state scoped engineers) as well
+  if (!permissions.readAll && !permissions.readAssigned && !permissions.readOwn && !permissions.readScoped) {
     return deny(res, 'Not allowed to view tickets');
   }
   return next();

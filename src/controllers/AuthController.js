@@ -90,7 +90,7 @@ function buildTokenUserIdentifier(user) {
   return user.public_id || String(user._id);
 }
 
-function signAccessToken(user) {
+function signAccessToken(user, rememberMe = false) {
   return jwt.sign(
     {
       id: buildTokenUserIdentifier(user),
@@ -98,11 +98,11 @@ function signAccessToken(user) {
       role: persistRole(user.role)
     },
     SECRET,
-    { expiresIn: ACCESS_TOKEN_EXPIRES_IN }
+    { expiresIn: rememberMe ? (process.env.REMEMBER_ME_ACCESS_TOKEN_EXPIRES_IN || ACCESS_TOKEN_EXPIRES_IN) : ACCESS_TOKEN_EXPIRES_IN }
   );
 }
 
-function signRefreshToken(user) {
+function signRefreshToken(user, rememberMe = false) {
   return jwt.sign(
     {
       id: buildTokenUserIdentifier(user),
@@ -111,7 +111,7 @@ function signRefreshToken(user) {
       type: 'refresh'
     },
     SECRET,
-    { expiresIn: REFRESH_TOKEN_EXPIRES_IN }
+    { expiresIn: rememberMe ? (process.env.REMEMBER_ME_REFRESH_TOKEN_EXPIRES_IN || REFRESH_TOKEN_EXPIRES_IN) : REFRESH_TOKEN_EXPIRES_IN }
   );
 }
 
@@ -332,6 +332,255 @@ function getDefaultRouteForRole(role) {
     'IT Support': '/it-support/dashboard'
   };
   return map[role] || '/dashboard';
+}
+
+const ENGINEER_DASHBOARD_WIDGETS = [
+  'openTickets',
+  'closedTickets',
+  'pendingTickets',
+  'slaBreaches',
+  'engineerPerformance',
+  'categoryBreakdown'
+];
+
+function buildScopedEngineerConfig(scope, routePrefix) {
+  return {
+    scope,
+    defaultRoute: `${routePrefix}/dashboard`,
+    menus: [
+      ['Dashboard', `${routePrefix}/dashboard`, 'LayoutDashboard', 'dashboard'],
+      ['Assigned Tickets', `${routePrefix}/tickets`, 'Ticket', 'tickets'],
+      ['Escalations', `${routePrefix}/escalations`, 'ArrowUpRight', 'escalations'],
+      ['Reports', `${routePrefix}/reports`, 'BarChart3', 'reports'],
+        ['Performance Dashboard', `${routePrefix}/performance-dashboard`, 'BarChart4', 'performance'],
+        ['Chatbot', `${routePrefix}/chatbot`, 'MessageCircle', 'chatbot'],
+    ],
+    widgets: ENGINEER_DASHBOARD_WIDGETS,
+  };
+}
+
+const ITSM_ROLE_CONFIG = {
+  SUPER_ADMIN: {
+    scope: 'GLOBAL',
+    defaultRoute: '/super-admin/dashboard',
+    menus: [
+      ['Dashboard', '/super-admin/dashboard', 'LayoutDashboard', 'dashboard'],
+      ['Tenant Management', '/super-admin/tenants', 'Building2', 'tenants'],
+      ['Role Management', '/super-admin/roles', 'Shield', 'roles'],
+      ['Permission Management', '/super-admin/permissions', 'Key', 'permissions'],
+      ['User Management', '/super-admin/users', 'Users', 'users'],
+      ['Category Management', '/super-admin/categories', 'FolderTree', 'categories'],
+      ['Subcategory Management', '/super-admin/subcategories', 'ListTree', 'subcategories'],
+      ['Engineer Mapping', '/super-admin/engineer-mapping', 'GitBranch', 'engineer-mapping'],
+      ['SLA Management', '/super-admin/sla', 'Clock', 'sla'],
+      ['Ticket Management', '/super-admin/tickets', 'Ticket', 'tickets'],
+      ['Reports', '/super-admin/reports', 'BarChart3', 'reports'],
+      ['Audit Logs', '/super-admin/audit-logs', 'ScrollText', 'audit-logs'],
+      ['Notifications', '/super-admin/notifications', 'Bell', 'notifications'],
+      ['Settings', '/super-admin/settings', 'Settings', 'settings'],
+    ],
+    widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'slaBreaches', 'engineerPerformance', 'categoryBreakdown'],
+  },
+  CENTRAL_IT_ADMIN: {
+    scope: 'GLOBAL',
+    defaultRoute: '/it-admin/dashboard',
+    menus: [
+      ['Dashboard', '/it-admin/dashboard', 'LayoutDashboard', 'dashboard'],
+      ['Users', '/it-admin/users', 'Users', 'users'],
+      ['Categories', '/it-admin/categories', 'FolderTree', 'categories'],
+      ['Subcategories', '/it-admin/subcategories', 'ListTree', 'subcategories'],
+      ['Engineer Mapping', '/it-admin/engineer-mapping', 'GitBranch', 'engineer-mapping'],
+      ['SLA Management', '/it-admin/sla', 'Clock', 'sla'],
+      ['Tickets', '/it-admin/tickets', 'Ticket', 'tickets'],
+      ['Reports', '/it-admin/reports', 'BarChart3', 'reports'],
+      ['Notifications', '/it-admin/notifications', 'Bell', 'notifications'],
+      ['Chatbot', '/it-admin/chatbot', 'MessageCircle', 'chatbot'],
+    ],
+    widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'slaBreaches', 'engineerPerformance', 'categoryBreakdown'],
+  },
+  IT_ADMIN: {
+    scope: 'GLOBAL',
+    defaultRoute: '/it-admin/dashboard',
+    menus: [
+      ['Dashboard', '/it-admin/dashboard', 'LayoutDashboard', 'dashboard'],
+      ['Users', '/it-admin/users', 'Users', 'users'],
+      ['Categories', '/it-admin/categories', 'FolderTree', 'categories'],
+      ['Subcategories', '/it-admin/subcategories', 'ListTree', 'subcategories'],
+      ['Engineer Mapping', '/it-admin/engineer-mapping', 'GitBranch', 'engineer-mapping'],
+      ['SLA Management', '/it-admin/sla', 'Clock', 'sla'],
+      ['Tickets', '/it-admin/tickets', 'Ticket', 'tickets'],
+      ['Reports', '/it-admin/reports', 'BarChart3', 'reports'],
+      ['Notifications', '/it-admin/notifications', 'Bell', 'notifications'],
+      ['Chatbot', '/it-admin/chatbot', 'MessageCircle', 'chatbot'],
+    ],
+    widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'slaBreaches', 'engineerPerformance', 'categoryBreakdown'],
+  },
+  REQUESTER: {
+    scope: 'OWN',
+    defaultRoute: '/requester/dashboard',
+    menus: [
+      ['Dashboard', '/requester/dashboard', 'LayoutDashboard', 'dashboard'],
+      ['Create Ticket', '/requester/tickets/new', 'PlusCircle', 'create-ticket'],
+      ['My Tickets', '/requester/tickets', 'Ticket', 'my-tickets'],
+      ['Closed Tickets', '/requester/tickets/closed', 'CheckCircle2', 'closed-tickets'],
+      ['Profile', '/requester/profile', 'User', 'profile'],
+    ],
+    widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'categoryBreakdown'],
+  },
+  IT_SUPPORT: {
+    scope: 'OWN',
+    defaultRoute: '/it-support/dashboard',
+    menus: [
+      ['Dashboard', '/it-support/dashboard', 'LayoutDashboard', 'dashboard'],
+      ['Tickets', '/it-support/tickets', 'Ticket', 'tickets'],
+      ['My Assigned Tickets', '/it-support/my-tickets', 'UserCheck', 'my-tickets'],
+      ['Notifications', '/it-support/notifications', 'Bell', 'notifications'],
+      ['Chatbot', '/it-support/chatbot', 'MessageCircle', 'chatbot'],
+    ],
+    widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'slaBreaches'],
+  },
+  L1_ENGINEER: {
+    ...buildScopedEngineerConfig('OWN', '/engineer'),
+  },
+  BRANCH_ENGINEER: {
+    ...buildScopedEngineerConfig('BRANCH', '/branch-engineer'),
+  },
+  CLUSTER_ENGINEER: {
+    ...buildScopedEngineerConfig('CLUSTER', '/cluster-engineer'),
+  },
+  L2_ENGINEER: {
+    ...buildScopedEngineerConfig('CLUSTER', '/cluster-lead'),
+  },
+  REGIONAL_ENGINEER: {
+    ...buildScopedEngineerConfig('REGION', '/regional-engineer'),
+  },
+  REGIONAL_IT_MANAGER: {
+    ...buildScopedEngineerConfig('REGION', '/regional-manager'),
+  },
+  STATE_ENGINEER: {
+    ...buildScopedEngineerConfig('STATE', '/state-engineer'),
+  },
+  TICKET_APPROVER: {
+    scope: 'GLOBAL',
+    defaultRoute: '/ticket-approver/dashboard',
+    menus: [
+      ['Dashboard', '/ticket-approver/dashboard', 'LayoutDashboard', 'dashboard'],
+      ['Pending Approvals', '/ticket-approver/pending', 'Clock', 'pending'],
+      ['Approved Tickets', '/ticket-approver/approved', 'CheckCircle2', 'approved'],
+      ['Rejected Tickets', '/ticket-approver/rejected', 'XCircle', 'rejected'],
+    ],
+    widgets: ['openTickets', 'closedTickets', 'pendingTickets'],
+  },
+  END_USER: {
+    scope: 'OWN',
+    defaultRoute: '/dashboard',
+    menus: [],
+    widgets: []
+  }
+};
+
+function buildItsmMenus(roleKey) {
+  const config = (ITSM_ROLE_CONFIG && ITSM_ROLE_CONFIG[roleKey]) || (ITSM_ROLE_CONFIG && ITSM_ROLE_CONFIG.END_USER) || {};
+  const menus = config.menus || [];
+  return menus.map(([label, pathValue, icon, customKey], index) => ({
+    key: customKey || slugifyModule(label) || `menu-${index + 1}`,
+    label,
+    name: label,
+    path: pathValue,
+    icon,
+    order: index + 1,
+  }));
+}
+
+function buildItsmWidgets(roleKey) {
+  const config = (ITSM_ROLE_CONFIG && ITSM_ROLE_CONFIG[roleKey]) || (ITSM_ROLE_CONFIG && ITSM_ROLE_CONFIG.END_USER) || {};
+  const widgets = config.widgets || [];
+  return widgets.map((key, index) => ({
+    key,
+    order: index + 1,
+    enabled: true,
+  }));
+}
+
+async function loadItsmLocationContext(user) {
+  if (!user || !user._id || !user.tenant_id) {
+    return { state: null, region: null, cluster: null, branch: null };
+  }
+
+  try {
+    const rows = await qAsync(
+      `
+        SELECT
+          em.state_id,
+          em.region_id,
+          em.cluster_id,
+          em.branch_id,
+          s.name AS state_name,
+          r.name AS region_name,
+          c.name AS cluster_name,
+          b.name AS branch_name
+        FROM engineer_mapping em
+        LEFT JOIN states s ON s.id = em.state_id AND s.tenant_id = em.tenant_id
+        LEFT JOIN regions r ON r.id = em.region_id AND r.tenant_id = em.tenant_id
+        LEFT JOIN clusters c ON c.id = em.cluster_id AND c.tenant_id = em.tenant_id
+        LEFT JOIN branches b ON b.id = em.branch_id AND b.tenant_id = em.tenant_id
+        WHERE em.tenant_id = ?
+          AND em.engineer_id = ?
+          AND em.is_active = 1
+        ORDER BY em.updated_at DESC, em.id DESC
+        LIMIT 1
+      `,
+      [user.tenant_id, user._id]
+    );
+
+    if (rows && rows.length > 0 && (rows[0].state_id || rows[0].region_id || rows[0].cluster_id || rows[0].branch_id)) {
+      const row = rows[0];
+      return {
+        state: row.state_id ? { id: row.state_id, name: row.state_name || null } : null,
+        region: row.region_id ? { id: row.region_id, name: row.region_name || null } : null,
+        cluster: row.cluster_id ? { id: row.cluster_id, name: row.cluster_name || null } : null,
+        branch: row.branch_id ? { id: row.branch_id, name: row.branch_name || null } : null,
+      };
+    }
+
+    const userRows = await qAsync(
+      `
+        SELECT
+          u.state_id,
+          u.region_id,
+          u.cluster_id,
+          u.branch_id,
+          s.name AS state_name,
+          r.name AS region_name,
+          c.name AS cluster_name,
+          b.name AS branch_name
+        FROM users u
+        LEFT JOIN states s ON s.id = u.state_id AND s.tenant_id = u.tenant_id
+        LEFT JOIN regions r ON r.id = u.region_id AND r.tenant_id = u.tenant_id
+        LEFT JOIN clusters c ON c.id = u.cluster_id AND c.tenant_id = u.tenant_id
+        LEFT JOIN branches b ON b.id = u.branch_id AND b.tenant_id = u.tenant_id
+        WHERE u.tenant_id = ?
+          AND u._id = ?
+        LIMIT 1
+      `,
+      [user.tenant_id, user._id]
+    );
+
+    if (userRows && userRows.length > 0) {
+      const row = userRows[0];
+      return {
+        state: row.state_id ? { id: row.state_id, name: row.state_name || null } : null,
+        region: row.region_id ? { id: row.region_id, name: row.region_name || null } : null,
+        cluster: row.cluster_id ? { id: row.cluster_id, name: row.cluster_name || null } : null,
+        branch: row.branch_id ? { id: row.branch_id, name: row.branch_name || null } : null,
+      };
+    }
+
+    return { state: null, region: null, cluster: null, branch: null };
+  } catch (error) {
+    logger.warn('Could not load ITSM location context:', error.message);
+    return { state: null, region: null, cluster: null, branch: null };
+  }
 }
 
 async function ensureUsers2FAColumns() {
@@ -610,8 +859,9 @@ router.post('/login', [
 
 async function completeLoginForUser(user, req, res) {
   try {
-    const token = signAccessToken(user);
-    const refreshToken = signRefreshToken(user);
+    const rememberMe = Boolean(req.body && (req.body.rememberMe || req.body.remember_me || req.body.remember));
+    const token = signAccessToken(user, rememberMe);
+    const refreshToken = signRefreshToken(user, rememberMe);
 
     const storedModules = normalizeStoredModules(user);
     const persistedRole = persistRole(user.role);
@@ -640,10 +890,35 @@ async function completeLoginForUser(user, req, res) {
     const filteredModules = filterRoleRestrictedModules(modulesToReturn, persistedRole);
     const orderedModules = reorderModules(filteredModules);
     const modulesWithPaths = annotateModulesWithPaths(orderedModules, persistedRole);
+    // Build a friendly routes map from the modules we are returning so frontend
+    // can consume route names and paths directly in the login response.
+    const moduleRoutes = {};
+    try {
+      modulesWithPaths.forEach((m) => {
+        const rawKey = (m && (m.key || m.name)) || '';
+        if (!rawKey) return;
+        const key = String(rawKey).toLowerCase().replace(/[\s\W]+/g, '_').replace(/^_+|_+$/g, '');
+        moduleRoutes[key] = m.path || null;
+      });
+    } catch (e) {
+      logger.warn('Failed to build module routes for login response:', e && e.message);
+    }
+    // Map certain normalized role keys to ITSM_ROLE_CONFIG keys so engineers
+    // like L1/L2 receive the appropriate engineer menus (e.g. branch/cluster)
+    const ITSM_ROLE_KEY_MAP = {
+      L1_ENGINEER: 'BRANCH_ENGINEER',
+      L2_ENGINEER: 'CLUSTER_ENGINEER',
+      // keep other mappings here as needed
+    };
+    const itsmRoleKey = ITSM_ROLE_KEY_MAP[normalizedRoleKey] || normalizedRoleKey || 'END_USER';
+
+    const sidebarMenus = buildItsmMenus(itsmRoleKey || 'END_USER');
+    const dashboardWidgets = buildItsmWidgets(itsmRoleKey || 'END_USER');
+    const itTicketingScope = (ITSM_ROLE_CONFIG && (ITSM_ROLE_CONFIG[itsmRoleKey] || ITSM_ROLE_CONFIG.END_USER) || { scope: 'OWN' }).scope || 'OWN';
 
     // For Admin role, filter permissions based on assigned modules
     let filteredPermissions = permissions;
-    let defaultRoute = getDefaultRouteForRole(persistedRole);
+    let defaultRoute = (ITSM_ROLE_CONFIG && ITSM_ROLE_CONFIG[normalizedRoleKey] && ITSM_ROLE_CONFIG[normalizedRoleKey].defaultRoute) || getDefaultRouteForRole(persistedRole);
     if (persistedRole === 'Admin' && dbAdminModules && dbAdminModules.length > 0) {
       // Filter permissions to only include modules assigned to this admin
       const assignedModuleNames = dbAdminModules.map(m => m.name.toLowerCase().trim());
@@ -730,6 +1005,7 @@ async function completeLoginForUser(user, req, res) {
     }
 
     const userId = user.public_id || String(user._id);
+    const locationContext = await loadItsmLocationContext(user);
 
     // SuperAdmin: platform owner — no tenant context
     let tenantPublicId = null;
@@ -767,7 +1043,8 @@ async function completeLoginForUser(user, req, res) {
           ticketDetails: "/it-support/tickets/:id",
           createTicket: "/it-support/create",
           assignedTickets: "/it-support/my-tickets",
-          notifications: "/it-support/notifications"
+          notifications: "/it-support/notifications",
+          chatbot: "/it-support/chatbot"
         },
         permissions: {
           tickets: {
@@ -795,22 +1072,56 @@ async function completeLoginForUser(user, req, res) {
       };
     }
 
+    // Also include routes from the sidebarMenus so custom IT menus (eg. chatbot)
+    // are available in the friendly routes map returned to the frontend.
+    const menuRoutesFromSidebar = {};
+    try {
+      (sidebarMenus || []).forEach((m) => {
+        if (!m || !m.key) return;
+        const key = String(m.key).toLowerCase().replace(/[\s\W]+/g, '_').replace(/^_+|_+$/g, '');
+        menuRoutesFromSidebar[key] = m.path || null;
+      });
+    } catch (e) {
+      // ignore
+    }
+
+    const mergedRoutes = Object.assign({}, (itSupportData && itSupportData.routes) || {}, moduleRoutes, menuRoutesFromSidebar);
+
     return res.json({
       success: true,
       token,
       refreshToken,
       ...(isSuperAdmin ? { superAdminTenantId } : { tenantId: tenantPublicId }),
       userId,
+      name: user.name,
+      email: user.email,
+      role: persistedRole,
+      roleKey: normalizedRoleKey,
+      state: locationContext.state,
+      region: locationContext.region,
+      cluster: locationContext.cluster,
+      branch: locationContext.branch,
+      sidebarMenus,
+      dashboardWidgets,
+      scope: itTicketingScope,
+      // Friendly routes map for frontend
+      routes: mergedRoutes,
       user: {
         id: userId,
         email: user.email,
         name: user.name,
         role: persistedRole,
         normalized_role: normalizeRole(persistedRole),
+        roleKey: normalizedRoleKey,
+        state: locationContext.state,
+        region: locationContext.region,
+        cluster: locationContext.cluster,
+        branch: locationContext.branch,
         phone: user.phone || null,
         title: user.title || null,
         department: user.department || null,
         photo: photoUrl,
+        routes: mergedRoutes,
         ...(isSuperAdmin ? {} : { tenant_id: user.tenant_id || null })
       },
       ...(isSuperAdmin ? {} : { tenant: tenantInfo }),
@@ -1231,6 +1542,7 @@ router.get('/profile', requireAuth, async (req, res) => {
           email: row.email,
           name: row.name || '',
           role: row.role || 'user',
+          normalized_role: normalizeRole(row.role || 'user'),
           tenant_id: row.tenant_id || null,
           phone: row.phone || null,
           title: row.title || null,
@@ -1364,6 +1676,7 @@ router.put("/profile", requireAuth, upload.single("photo"), async (req, res) => 
               title: updated.title,
               department: updated.department || null,
               role: updated.role,
+              normalized_role: normalizeRole(updated.role),
               tenant_id: updated.tenant_id,
               photo: fullPhotoURL
             }

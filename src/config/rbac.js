@@ -14,35 +14,70 @@ const ROLE_DEFINITIONS = {
     level: 78,
     aliases: ['central it admin', 'central_it_admin']
   },
+  IT_ADMIN: {
+    persisted: 'IT Admin',
+    level: 78,
+    aliases: ['it admin', 'it_admin']
+  },
+  STATE_ENGINEER: {
+    persisted: 'State Engineer',
+    level: 74,
+    aliases: ['state engineer', 'state_engineer', 'stateengineer']
+  },
+  REGIONAL_ENGINEER: {
+    persisted: 'Regional Engineer',
+    level: 72,
+    aliases: ['regional engineer', 'regional_engineer', 'regionalengineer']
+  },
   REGIONAL_IT_MANAGER: {
     persisted: 'Regional IT Manager',
     level: 72,
-    aliases: ['regional it manager', 'regional_it_manager']
+    aliases: ['regional it manager', 'regional_it_manager', 'it manager', 'it_manager']
   },
   IT_SUPPORT: {
     persisted: 'IT Support',
     level: 70,
-    aliases: ['it support', 'itsupport', 'it_support', 'support']
+    aliases: ['it support', 'itsupport', 'it_support', 'support', 'it support engineer', 'it_support_engineer']
+  },
+  CLUSTER_ENGINEER: {
+    persisted: 'Cluster Engineer',
+    level: 70,
+    aliases: ['cluster engineer', 'cluster_engineer', 'clusterengineer']
   },
   L2_ENGINEER: {
     persisted: 'Cluster Lead',
     level: 68,
     aliases: ['cluster lead', 'cluster_lead', 'l2 engineer', 'l2_engineer', 'cluster lead / l2 engineer']
   },
+  BRANCH_ENGINEER: {
+    persisted: 'Branch Engineer',
+    level: 68,
+    aliases: ['branch engineer', 'branch_engineer', 'branchengineer']
+  },
   L1_ENGINEER: {
     persisted: 'L1 Engineer',
     level: 64,
-    aliases: ['l1 engineer', 'l1_engineer']
+    aliases: ['l1 engineer', 'l1_engineer', 'l1 support engineer', 'l1_support_engineer', 'l1 support']
   },
   AUDIT: {
     persisted: 'Audit',
     level: 65,
     aliases: ['audit', 'auditor']
   },
+  TICKET_APPROVER: {
+    persisted: 'Ticket Approver',
+    level: 60,
+    aliases: ['ticket approver', 'ticket_approver', 'ticketapprover']
+  },
   MANAGER: {
     persisted: 'Manager',
     level: 60,
     aliases: ['manager']
+  },
+  REQUESTER: {
+    persisted: 'Requester',
+    level: 40,
+    aliases: ['requester']
   },
   EMPLOYEE: {
     persisted: 'Employee',
@@ -52,7 +87,7 @@ const ROLE_DEFINITIONS = {
   END_USER: {
     persisted: 'End User',
     level: 38,
-    aliases: ['end user', 'end_user']
+    aliases: ['end user', 'end_user', 'end user / branch user', 'branch user', 'branch_user']
   },
   CLIENT: {
     persisted: 'Client-Viewer',
@@ -60,6 +95,7 @@ const ROLE_DEFINITIONS = {
     aliases: ['client', 'client-viewer', 'client viewer', 'client_viewer', 'readonly_client']
   }
 };
+
 
 const DEFAULT_ROLE_PERMISSIONS = {
   SUPER_ADMIN: {
@@ -89,6 +125,15 @@ const DEFAULT_ROLE_PERMISSIONS = {
   },
   CENTRAL_IT_ADMIN: {
     dashboard: { read: true },
+    users: {
+      read: true,
+      create: true,
+      update: true,
+      invite: true,
+      deactivate: true,
+      view: true,
+      edit: true
+    },
     tickets: { read: true, create: true, update: true, assign: true, comment: true, close: true, reopen: true, dashboard: true },
     categories: { manage: true, read: true },
     engineer_mapping: { manage: true, read: true },
@@ -166,13 +211,124 @@ const DEFAULT_ROLE_PERMISSIONS = {
     notifications: { read: true },
     chat: { read: true },
     settings: { read: true }
+  },
+  REQUESTER: {
+    dashboard: { read: true },
+    tickets: { read: true, create: true, comment: true, upload_attachment: true, reopen: true, view: true },
+    profile: { read: true, update: true },
+    notifications: { read: true }
+  },
+  BRANCH_ENGINEER: {
+    dashboard: { read: true },
+    tickets: { read: true, accept: true, resolve: true, comment: true, upload_resolution: true, view: true },
+    profile: { read: true, update: true },
+    notifications: { read: true }
+  },
+  CLUSTER_ENGINEER: {
+    dashboard: { read: true },
+    tickets: { read: true, resolve: true, escalate: true, comment: true, view: true },
+    reports: { read: true },
+    notifications: { read: true }
+  },
+  REGIONAL_ENGINEER: {
+    dashboard: { read: true },
+    tickets: { read: true, resolve: true, escalate: true, monitor_regions: true, view: true },
+    reports: { read: true },
+    notifications: { read: true }
+  },
+  STATE_ENGINEER: {
+    dashboard: { read: true },
+    tickets: { read: true, resolve: true, escalate: true, monitor_state: true, view: true },
+    reports: { read: true },
+    notifications: { read: true }
+  },
+  TICKET_APPROVER: {
+    dashboard: { read: true },
+    tickets: { read: true, approve: true, reject: true, view_history: true, view: true },
+    notifications: { read: true }
+  }
+};
+
+// Explicitly define IT_ADMIN permissions
+DEFAULT_ROLE_PERMISSIONS.IT_ADMIN = {
+  dashboard: { read: true },
+  users: {
+    read: true,
+    create: true,
+    update: true,
+    invite: true,
+    deactivate: true,
+    view: true,
+    edit: true
+  },
+  categories: {
+    create: true,
+    edit: true,
+    delete: true,
+    view: true,
+    manage: true,
+    read: true
+  },
+  engineer_mapping: {
+    create: true,
+    edit: true,
+    delete: true,
+    view: true,
+    manage: true,
+    read: true
+  },
+  ticket_sla: {
+    create: true,
+    edit: true,
+    delete: true,
+    view: true,
+    manage: true,
+    read: true
+  },
+  sla_management: {
+    create: true,
+    edit: true,
+    delete: true,
+    view: true,
+    manage: true,
+    read: true
+  },
+  'sla-management': {
+    create: true,
+    edit: true,
+    delete: true,
+    view: true,
+    manage: true,
+    read: true
+  },
+  tickets: {
+    read: true,
+    create: true,
+    update: true,
+    assign: true,
+    comment: true,
+    close: true,
+    reopen: true,
+    dashboard: true,
+    view_all: true,
+    view_all_tickets: true
+  },
+  reports: {
+    read: true,
+    view: true,
+    export: true
+  },
+  notifications: {
+    read: true,
+    send: true,
+    view: true
   }
 };
 
 function normalizeRole(role) {
   if (!role) return null;
   const raw = String(role).trim();
-  const lowered = raw.toLowerCase().replace(/[_\s]+/g, ' ');
+  const lowered = raw.toLowerCase().replace(/[_\s-]+/g, ' ');
   for (const [key, definition] of Object.entries(ROLE_DEFINITIONS)) {
     if (definition.persisted.toLowerCase() === lowered) return key;
     if ((definition.aliases || []).includes(lowered)) return key;

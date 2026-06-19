@@ -10,8 +10,12 @@ router.use(auth, allowRoles('SuperAdmin'));
 // Platform Dashboard
 router.get('/dashboard', superAdmin.getDashboard);
 
-// Tenant CRUD (Expose only list for now)
+// Tenant CRUD
+router.post('/tenants', superAdmin.createTenant);
 router.get('/tenants', superAdmin.listTenants);
+router.get('/tenants/:id', superAdmin.getTenant);
+router.put('/tenants/:id', superAdmin.updateTenant);
+router.delete('/tenants/:id', superAdmin.deleteTenant);
 
 // Admin CRUD
 router.post('/admins', superAdmin.createAdmin);

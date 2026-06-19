@@ -84,6 +84,10 @@ function locationMatches(ticket, mapping) {
   return true;
 }
 
+function hasAnyLocation(ticket = {}) {
+  return Boolean(ticket.state_id || ticket.region_id || ticket.cluster_id || ticket.branch_id);
+}
+
 function categoryMatches(ticket, mapping) {
   if (!mapping.supported_categories_json) return true;
   let supportedCategories = [];
@@ -108,14 +112,24 @@ function categoryMatches(ticket, mapping) {
 }
 
 function calculateMatchScore(ticket, mapping, workload) {
-  if (!locationMatches(ticket, mapping)) return -1;
-  if (!categoryMatches(ticket, mapping)) return -1;
+  const ticketHasLocation = hasAnyLocation(ticket);
+
+  // Strict location matching when ticket has location data.
+  // If ticket location is missing, fall back to category/workload matching
+  // so tickets are still assignable instead of remaining unassigned.
+  if (ticketHasLocation && !locationMatches(ticket, mapping)) return null;
+  if (!categoryMatches(ticket, mapping)) return null;
 
   let score = 0;
-  if (mapping.state_id && Number(mapping.state_id) === Number(ticket.state_id || 0)) score += 10;
-  if (mapping.region_id && Number(mapping.region_id) === Number(ticket.region_id || 0)) score += 20;
-  if (mapping.cluster_id && Number(mapping.cluster_id) === Number(ticket.cluster_id || 0)) score += 30;
-  if (mapping.branch_id && Number(mapping.branch_id) === Number(ticket.branch_id || 0)) score += 40;
+  if (ticketHasLocation) {
+    if (mapping.state_id && Number(mapping.state_id) === Number(ticket.state_id || 0)) score += 10;
+    if (mapping.region_id && Number(mapping.region_id) === Number(ticket.region_id || 0)) score += 20;
+    if (mapping.cluster_id && Number(mapping.cluster_id) === Number(ticket.cluster_id || 0)) score += 30;
+    if (mapping.branch_id && Number(mapping.branch_id) === Number(ticket.branch_id || 0)) score += 40;
+  } else {
+    // Small base score for fallback-mode candidates when location is absent.
+    score += 5;
+  }
   score -= workload * 2;
 
   return score;
@@ -147,6 +161,9 @@ async function dispatchTicketNotifications(ticket, eventType, extra = {}) {
     closed: `Ticket ${ticket.ticket_id} closed`,
     reopened: `Ticket ${ticket.ticket_id} reopened`,
     commented: `New comment on ${ticket.ticket_id}`,
+    accepted: `Ticket ${ticket.ticket_id} accepted`,
+    resolved: `Ticket ${ticket.ticket_id} resolved`,
+    on_hold: `Ticket ${ticket.ticket_id} put on hold`,
   }[eventType] || `Ticket ${ticket.ticket_id} updated`;
 
   const message = extra.message || `${ticket.title} [${ticket.status}]`;
@@ -175,14 +192,64 @@ async function dispatchTicketNotifications(ticket, eventType, extra = {}) {
       text: `${message}\nTicket ID: ${ticket.ticket_id}\nStatus: ${ticket.status}\nPriority: ${ticket.priority}`,
     }))
   );
+
+  // Broadcast full ticket payload over socket.io so frontend kanban/queues
+  // can react to assignment/accept/update events in real time.
+  try {
+    if (global.io) {
+      const socketEventMap = {
+        created: 'ticket:created',
+        assigned: 'ticket:assigned',
+        reassigned: 'ticket:reassigned',
+        updated: 'ticket:updated',
+        escalated: 'ticket:escalated',
+        closed: 'ticket:closed',
+        reopened: 'ticket:reopened',
+        commented: 'ticket:commented',
+        accepted: 'ticket:accepted',
+        resolved: 'ticket:resolved',
+        on_hold: 'ticket:on_hold',
+      };
+      const eventName = socketEventMap[eventType] || 'ticket:updated';
+      global.io.emit(eventName, ticket);
+    }
+  } catch (err) {
+    logger.warn(`socket emit failed for ticket ${ticket.ticket_id || ticket.id}: ${err && err.message ? err.message : String(err)}`);
+  }
 }
 
 async function autoAssignTicket(ticket, actorUser = null) {
-  if (!ticket || !ticket.tenant_id || ticket.is_draft) return null;
-  if (ticket.assigned_to) return ticket;
+  if (!ticket || !ticket.tenant_id || ticket.is_draft) {
+    logger.info('ticket auto-assign skipped: invalid ticket, tenant missing, or draft', {
+      ticketId: ticket?.ticket_id || ticket?.id || null,
+      tenantId: ticket?.tenant_id || null,
+      isDraft: Boolean(ticket?.is_draft),
+    });
+    return null;
+  }
+  if (ticket.assigned_to) {
+    logger.info('ticket auto-assign skipped: ticket already assigned', {
+      ticketId: ticket.ticket_id || ticket.id,
+      tenantId: ticket.tenant_id,
+      assignedTo: ticket.assigned_to,
+    });
+    return ticket;
+  }
 
   const mappings = await loadActiveMappings(ticket.tenant_id);
-  if (!mappings.length) return ticket;
+  if (!mappings.length) {
+    logger.warn('ticket auto-assign skipped: no active engineer mappings found', {
+      ticketId: ticket.ticket_id || ticket.id,
+      tenantId: ticket.tenant_id,
+      stateId: ticket.state_id || null,
+      regionId: ticket.region_id || null,
+      clusterId: ticket.cluster_id || null,
+      branchId: ticket.branch_id || null,
+      categoryId: ticket.category_id || null,
+      subcategoryId: ticket.subcategory_id || null,
+    });
+    return ticket;
+  }
 
   const workloads = await loadOpenWorkloads(ticket.tenant_id, mappings.map((mapping) => mapping.engineer_id));
   const candidates = mappings
@@ -191,16 +258,63 @@ async function autoAssignTicket(ticket, actorUser = null) {
       workload: workloads.get(Number(mapping.engineer_id)) || 0,
       score: calculateMatchScore(ticket, mapping, workloads.get(Number(mapping.engineer_id)) || 0),
     }))
-    .filter((item) => item.score >= 0)
+    // Keep negative scores as valid candidates (high workload), and
+    // only drop non-eligible mappings (null score from hard mismatches).
+    .filter((item) => item.score !== null)
     .sort((left, right) => {
       if (right.score !== left.score) return right.score - left.score;
       if (left.workload !== right.workload) return left.workload - right.workload;
       return Number(left.mapping.id) - Number(right.mapping.id);
     });
+  // If strict candidate selection yields nothing, attempt a permissive
+  // fallback when the ticket lacks explicit location information so that
+  // tickets do not remain unassigned in test/seeded environments.
+  let chosen = null;
+  if (!candidates.length) {
+    logger.warn('ticket auto-assign: no strict candidates, attempting permissive fallback', {
+      ticketId: ticket.ticket_id || ticket.id,
+      tenantId: ticket.tenant_id,
+      ticketHasLocation: hasAnyLocation(ticket),
+      mappingCount: mappings.length,
+    });
 
-  if (!candidates.length) return ticket;
+    // Only fallback when ticket has no explicit location; preserving strict
+    // matching behavior for location-scoped tickets.
+    if (!hasAnyLocation(ticket)) {
+      const fallback = mappings
+        .map((mapping) => ({
+          mapping,
+          workload: workloads.get(Number(mapping.engineer_id)) || 0,
+          score: 5 - (workloads.get(Number(mapping.engineer_id)) || 0) * 2,
+        }))
+        .sort((left, right) => {
+          if (right.score !== left.score) return right.score - left.score;
+          if (left.workload !== right.workload) return left.workload - right.workload;
+          return Number(left.mapping.id) - Number(right.mapping.id);
+        });
 
-  const chosen = candidates[0];
+      if (fallback.length) chosen = fallback[0];
+    }
+    if (!chosen) {
+      logger.warn('ticket auto-assign skipped: no eligible mapping candidates (after fallback)', {
+        ticketId: ticket.ticket_id || ticket.id,
+        tenantId: ticket.tenant_id,
+        mappingCount: mappings.length,
+      });
+      return ticket;
+    }
+  } else {
+    chosen = candidates[0];
+  }
+  logger.info('ticket auto-assign candidate selected', {
+    ticketId: ticket.ticket_id || ticket.id,
+    tenantId: ticket.tenant_id,
+    selectedEngineerId: chosen.mapping.engineer_id,
+    selectedEngineerPublicId: chosen.mapping.engineer_public_id || null,
+    selectedEngineerName: chosen.mapping.engineer_name || null,
+    score: chosen.score,
+    workload: chosen.workload,
+  });
   await query(
     `
       UPDATE tickets

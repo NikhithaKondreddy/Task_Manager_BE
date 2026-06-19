@@ -11,6 +11,7 @@ module.exports = {
   userSearchRoutes: require('./routes/userSearchRoutes'),
   escalationRoutes: require('./routes/escalationRoutes'),
   subcategoryRoutes: require('./routes/subcategoryRoutes'),
+  feedbackRoutes: require('./routes/feedbackRoutes'),
   startSupportEmailWorker: worker.startSupportEmailWorker,
   stopSupportEmailWorker: worker.stopSupportEmailWorker,
   startTicketAutomationJobs,

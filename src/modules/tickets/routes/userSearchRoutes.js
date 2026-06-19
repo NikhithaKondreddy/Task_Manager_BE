@@ -27,6 +27,14 @@ router.get(
 
     const search = String(req.query.search || '').trim();
     const limit = Math.min(Math.max(Number(req.query.limit || 25), 1), 100);
+    const requesterRole = String(req.user?.role || '').toUpperCase();
+    const isITAdmin = requesterRole === 'IT ADMIN' || requesterRole === 'CENTRAL IT ADMIN' || req.user?.normalized_role === 'IT_ADMIN' || req.user?.normalized_role === 'CENTRAL_IT_ADMIN';
+
+    let roleFilter = '';
+    if (isITAdmin) {
+      roleFilter = ` AND u.role IN ('IT Admin', 'Central IT Admin', 'State Engineer', 'Regional Engineer', 'Regional IT Manager', 'IT Support', 'Cluster Engineer', 'Cluster Lead', 'L2 Engineer', 'Branch Engineer', 'L1 Engineer')`;
+    }
+
     const params = [req.user.tenant_id];
     let searchClause = '';
 
@@ -58,6 +66,7 @@ router.get(
         FROM users u
         WHERE u.tenant_id = ?
           AND COALESCE(u.isActive, 1) = 1
+          ${roleFilter}
           ${searchClause}
         ORDER BY u.name ASC
         LIMIT ?

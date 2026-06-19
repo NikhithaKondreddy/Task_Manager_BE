@@ -6,6 +6,7 @@ const ticketAssignmentController = require('../controllers/ticketAssignmentContr
 const escalationController = require('../controllers/escalationController');
 const approvalWorkflowController = require('../controllers/approvalWorkflowController');
 const ticketActivityController = require('../controllers/ticketActivityController');
+const feedbackController = require('../controllers/feedbackController');
 const {
   requireTicketCreateAccess,
   requireTicketViewAccess,
@@ -212,6 +213,20 @@ router.get(
   ticketController.listAttachments
 );
 
+router.get(
+  '/:ticketId/feedback',
+  requireTicketViewAccess,
+  [param('ticketId').isString().trim().isLength({ min: 1 })],
+  feedbackController.getTicketFeedback
+);
+
+router.post(
+  '/:ticketId/feedback',
+  requireTicketViewAccess,
+  [param('ticketId').isString().trim().isLength({ min: 1 }), body('rating').isInt({ min: 1, max: 5 })],
+  feedbackController.submitTicketFeedback
+);
+
 router.post(
   '/:ticketId/attachments',
   upload.any(),
@@ -353,7 +368,7 @@ router.post(
   '/:ticketId/on-hold',
   requireTicketManagementAccess,
   [param('ticketId').isString().trim().isLength({ min: 1 })],
-  (req, res, next) => { req.body.status = 'PENDING_USER'; return ticketController.setTicketStatus(req, res, next); }
+  (req, res, next) => { req.body.status = 'ON_HOLD'; return ticketController.setTicketStatus(req, res, next); }
 );
 
 router.post(

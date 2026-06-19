@@ -9,7 +9,7 @@ function handleError(res, error, code) {
 module.exports = {
   listStates: async (req, res) => {
     try {
-      const data = await masterDataService.listStates(req.user.tenant_id);
+      const data = await masterDataService.listStates(req.user.tenant_id, req.query);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -33,7 +33,7 @@ module.exports = {
   },
   deleteState: async (req, res) => {
     try {
-      const data = await masterDataService.deleteState(req.user.tenant_id, req.params.id);
+      const data = await masterDataService.deleteState(req.user.tenant_id, req.params.id, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'STATE_DELETE_FAILED');
@@ -42,7 +42,7 @@ module.exports = {
 
   listRegions: async (req, res) => {
     try {
-      const data = await masterDataService.listRegions(req.user.tenant_id);
+      const data = await masterDataService.listRegions(req.user.tenant_id, req.query);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -58,7 +58,7 @@ module.exports = {
   },
   updateRegion: async (req, res) => {
     try {
-      const data = await masterDataService.updateRegion(req.user.tenant_id, req.params.id, req.body);
+      const data = await masterDataService.updateRegion(req.user.tenant_id, req.params.id, req.body, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'REGION_UPDATE_FAILED');
@@ -66,7 +66,7 @@ module.exports = {
   },
   deleteRegion: async (req, res) => {
     try {
-      const data = await masterDataService.deleteRegion(req.user.tenant_id, req.params.id);
+      const data = await masterDataService.deleteRegion(req.user.tenant_id, req.params.id, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'REGION_DELETE_FAILED');
@@ -75,7 +75,7 @@ module.exports = {
 
   listClusters: async (req, res) => {
     try {
-      const data = await masterDataService.listClusters(req.user.tenant_id);
+      const data = await masterDataService.listClusters(req.user.tenant_id, req.query);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -91,7 +91,7 @@ module.exports = {
   },
   updateCluster: async (req, res) => {
     try {
-      const data = await masterDataService.updateCluster(req.user.tenant_id, req.params.id, req.body);
+      const data = await masterDataService.updateCluster(req.user.tenant_id, req.params.id, req.body, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'CLUSTER_UPDATE_FAILED');
@@ -99,7 +99,7 @@ module.exports = {
   },
   deleteCluster: async (req, res) => {
     try {
-      const data = await masterDataService.deleteCluster(req.user.tenant_id, req.params.id);
+      const data = await masterDataService.deleteCluster(req.user.tenant_id, req.params.id, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'CLUSTER_DELETE_FAILED');
@@ -108,7 +108,7 @@ module.exports = {
 
   listBranches: async (req, res) => {
     try {
-      const data = await masterDataService.listBranches(req.user.tenant_id);
+      const data = await masterDataService.listBranches(req.user.tenant_id, req.query);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -124,7 +124,7 @@ module.exports = {
   },
   updateBranch: async (req, res) => {
     try {
-      const data = await masterDataService.updateBranch(req.user.tenant_id, req.params.id, req.body);
+      const data = await masterDataService.updateBranch(req.user.tenant_id, req.params.id, req.body, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'BRANCH_UPDATE_FAILED');
@@ -132,7 +132,7 @@ module.exports = {
   },
   deleteBranch: async (req, res) => {
     try {
-      const data = await masterDataService.deleteBranch(req.user.tenant_id, req.params.id);
+      const data = await masterDataService.deleteBranch(req.user.tenant_id, req.params.id, req.user._id);
       res.json({ success: true, data });
     } catch (error) {
       handleError(res, error, 'BRANCH_DELETE_FAILED');

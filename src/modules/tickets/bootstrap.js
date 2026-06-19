@@ -458,6 +458,22 @@ async function ensureBaseTables() {
   `);
 
   await q(`
+    CREATE TABLE IF NOT EXISTS feedback (
+      id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+      tenant_id INT NULL,
+      ticket_id BIGINT UNSIGNED NOT NULL,
+      user_id INT NULL,
+      rating TINYINT UNSIGNED NOT NULL,
+      comment TEXT NULL,
+      status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_feedback_tenant_ticket (tenant_id, ticket_id),
+      INDEX idx_feedback_user (user_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  await q(`
     CREATE TABLE IF NOT EXISTS notification_preferences (
       id INT NOT NULL AUTO_INCREMENT PRIMARY KEY,
       tenant_id INT NOT NULL,
@@ -509,6 +525,14 @@ async function ensureBaseTables() {
 async function ensureLegacyCompatibility() {
   if (await tableExists('users')) {
     await ensurePrimaryKeyAndAutoIncrement('users', '_id', '_id INT NOT NULL AUTO_INCREMENT', 'idx_users_internal_id');
+    await ensureColumn('users', 'first_name VARCHAR(100) NULL');
+    await ensureColumn('users', 'last_name VARCHAR(100) NULL');
+    await ensureColumn('users', 'employee_id VARCHAR(100) NULL');
+    await ensureColumn('users', 'state_id INT NULL');
+    await ensureColumn('users', 'region_id INT NULL');
+    await ensureColumn('users', 'cluster_id INT NULL');
+    await ensureColumn('users', 'branch_id INT NULL');
+    await ensureColumn('users', 'reporting_manager_id INT NULL');
   }
 
   if (await tableExists('tickets')) {
@@ -564,6 +588,17 @@ async function ensureTicketColumns() {
   await ensureColumn('tickets', 'assignment_mode VARCHAR(30) NULL');
   await ensureColumn('tickets', 'assignment_reason TEXT NULL');
   await ensureColumn('tickets', 'workload_snapshot INT NULL');
+  await ensureColumn('tickets', 'referenced_ticket_id BIGINT UNSIGNED NULL');
+  await ensureColumn('tickets', 'override_reason TEXT NULL');
+  await ensureColumn('tickets', 'work_start_at DATETIME NULL');
+  await ensureColumn('tickets', 'work_duration_seconds INT NOT NULL DEFAULT 0');
+  await ensureColumn('tickets', 'hold_duration_seconds INT NOT NULL DEFAULT 0');
+  await ensureColumn('tickets', 'resolution_duration_seconds INT NULL');
+  await ensureColumn('tickets', 'closure_duration_seconds INT NULL');
+  await ensureColumn('tickets', 'hold_reason VARCHAR(255) NULL');
+  await ensureColumn('tickets', 'hold_remarks TEXT NULL');
+  await ensureColumn('tickets', 'resolution_summary TEXT NULL');
+  await ensureColumn('tickets', 'closure_remarks TEXT NULL');
 
   await ensureIndex('tickets', 'idx_tickets_tenant_status', 'INDEX idx_tickets_tenant_status (tenant_id, status)');
   await ensureIndex('tickets', 'idx_tickets_tenant_priority', 'INDEX idx_tickets_tenant_priority (tenant_id, priority)');
@@ -600,6 +635,15 @@ async function ensureAttachmentColumns() {
   await ensureColumn('attachments', 'uploaded_at DATETIME NULL');
 }
 
+async function ensureFeedbackColumns() {
+  if (!await tableExists('feedback')) return;
+  await ensureColumn('feedback', 'tenant_id INT NULL');
+  await ensureColumn('feedback', "status VARCHAR(20) NOT NULL DEFAULT 'ACTIVE'");
+  await ensureColumn('feedback', 'updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
+  await ensureIndex('feedback', 'idx_feedback_tenant_ticket', 'INDEX idx_feedback_tenant_ticket (tenant_id, ticket_id)');
+  await ensureIndex('feedback', 'idx_feedback_user', 'INDEX idx_feedback_user (user_id)');
+}
+
 async function migrateLegacyTicketData() {
   if (await tableExists('comments')) {
     await q(`
@@ -634,6 +678,7 @@ async function migrateLegacyTicketData() {
 }
 
 async function seedDefaults() {
+  logger.info('tickets bootstrap: seedDefaults - seeding SLA policies...');
   for (const policy of DEFAULT_SLA_POLICIES) {
     await q(
       `
@@ -655,6 +700,7 @@ async function seedDefaults() {
     ).catch(() => null);
   }
 
+  logger.info('tickets bootstrap: seedDefaults - seeding roles...');
   if (await tableExists('roles')) {
     const roles = [
       ['End User', 'Ticket requester / employee'],
@@ -662,6 +708,7 @@ async function seedDefaults() {
       ['Cluster Lead', 'Second level escalation owner'],
       ['Regional IT Manager', 'Regional IT escalation owner'],
       ['Central IT Admin', 'Central IT administration role'],
+      ['IT Admin', 'IT administration role'],
     ];
 
     for (const [name, description] of roles) {
@@ -676,6 +723,7 @@ async function seedDefaults() {
     }
   }
 
+  logger.info('tickets bootstrap: seedDefaults - seeding permissions...');
   if (await tableExists('permissions')) {
     const permissions = [
       ['ticket_read', 'Read tickets', 'tickets', 'read'],
@@ -704,6 +752,7 @@ async function seedDefaults() {
     }
   }
 
+  logger.info('tickets bootstrap: seedDefaults - seeding role permissions...');
   const rolePermissions = [
     ['ADMIN', 'categories', 'manage'],
     ['ADMIN', 'engineer_mapping', 'manage'],
@@ -776,6 +825,98 @@ async function seedDefaults() {
       [roleKey, moduleKey, permissionKey]
     ).catch(() => null);
   }
+
+  logger.info('tickets bootstrap: seedDefaults - calling seedStatesAndBranches...');
+  await seedStatesAndBranches();
+}
+
+async function seedStatesAndBranches() {
+  logger.info('tickets bootstrap: seedStatesAndBranches - starting...');
+  const data = [
+    {
+      stateName: 'Telangana (TS)',
+      branches: ['Adoni', 'Nalgonda', 'Khammam', 'Wanaparthy', 'Karimnagar', 'Medak', 'Siddipet', 'Nizamabad', 'Mahbubnagar', 'Hyderabad']
+    },
+    {
+      stateName: 'Maharashtra (MH)',
+      branches: ['Ahmednagar', 'Aurangabad', 'Chhatrapati Sambhajinagar', 'Pune', 'Nagpur', 'Latur', 'Nanded', 'Solapur', 'Kolhapur', 'Satara', 'Jalna']
+    },
+    {
+      stateName: 'Tamil Nadu (TN)',
+      branches: ['Anekal', 'Hosur', 'Salem', 'Erode', 'Coimbatore', 'Madurai', 'Trichy', 'Tirunelveli', 'Vellore', 'Chennai']
+    },
+    {
+      stateName: 'Karnataka (KA)',
+      branches: ['Anantpur', 'Ballari', 'Belgaum', 'Bengaluru', 'Davangere', 'Hubli', 'Kolar', 'Mangalore', 'Mysore', 'Raichur', 'Shimoga', 'Tumkur']
+    },
+    {
+      stateName: 'Andhra Pradesh (AP)',
+      branches: ['Guntur', 'Kadapa', 'Kakinada', 'Kurnool', 'Nellore', 'Ongole', 'Rajahmundry', 'Srikakulam', 'Tirupati', 'Vijayawada', 'Visakhapatnam']
+    }
+  ];
+
+  try {
+    logger.info('tickets bootstrap: seedStatesAndBranches - fetching tenants...');
+    const tenants = await q('SELECT id FROM tenants');
+    const tenantIds = tenants && tenants.length > 0 ? tenants.map(t => t.id) : [1];
+    logger.info('tickets bootstrap: seedStatesAndBranches - tenantIds: ' + JSON.stringify(tenantIds));
+
+    for (const tenantId of tenantIds) {
+      for (const item of data) {
+        // 1. Insert State
+        logger.info(`tickets bootstrap: seedStatesAndBranches - State [${item.stateName}] - inserting/updating...`);
+        await q(
+          'INSERT INTO states (tenant_id, name, status) VALUES (?, ?, "ACTIVE") ON DUPLICATE KEY UPDATE status="ACTIVE"',
+          [tenantId, item.stateName]
+        );
+        logger.info(`tickets bootstrap: seedStatesAndBranches - State [${item.stateName}] - selecting id...`);
+        const stateRows = await q('SELECT id FROM states WHERE tenant_id = ? AND name = ? LIMIT 1', [tenantId, item.stateName]);
+        const stateId = stateRows[0]?.id;
+        logger.info(`tickets bootstrap: seedStatesAndBranches - State [${item.stateName}] - id is: ${stateId}`);
+        if (!stateId) continue;
+
+        // 2. Insert Region (one default region per state)
+        const regionName = `${item.stateName.split(' ')[0]} Region`;
+        logger.info(`tickets bootstrap: seedStatesAndBranches - Region [${regionName}] - inserting/updating...`);
+        await q(
+          'INSERT INTO regions (tenant_id, state_id, name, status) VALUES (?, ?, ?, "ACTIVE") ON DUPLICATE KEY UPDATE status="ACTIVE"',
+          [tenantId, stateId, regionName]
+        );
+        logger.info(`tickets bootstrap: seedStatesAndBranches - Region [${regionName}] - selecting id...`);
+        const regionRows = await q('SELECT id FROM regions WHERE tenant_id = ? AND state_id = ? AND name = ? LIMIT 1', [tenantId, stateId, regionName]);
+        const regionId = regionRows[0]?.id;
+        logger.info(`tickets bootstrap: seedStatesAndBranches - Region [${regionName}] - id is: ${regionId}`);
+        if (!regionId) continue;
+
+        // 3. Insert Cluster (one default cluster per region)
+        const clusterName = `${item.stateName.split(' ')[0]} Cluster`;
+        logger.info(`tickets bootstrap: seedStatesAndBranches - Cluster [${clusterName}] - inserting/updating...`);
+        await q(
+          'INSERT INTO clusters (tenant_id, region_id, name, status) VALUES (?, ?, ?, "ACTIVE") ON DUPLICATE KEY UPDATE status="ACTIVE"',
+          [tenantId, regionId, clusterName]
+        );
+        logger.info(`tickets bootstrap: seedStatesAndBranches - Cluster [${clusterName}] - selecting id...`);
+        const clusterRows = await q('SELECT id FROM clusters WHERE tenant_id = ? AND region_id = ? AND name = ? LIMIT 1', [tenantId, regionId, clusterName]);
+        const clusterId = clusterRows[0]?.id;
+        logger.info(`tickets bootstrap: seedStatesAndBranches - Cluster [${clusterName}] - id is: ${clusterId}`);
+        if (!clusterId) continue;
+
+        // 4. Insert Branches
+        logger.info(`tickets bootstrap: seedStatesAndBranches - State [${item.stateName}] - seeding ${item.branches.length} branches...`);
+        for (const branchName of item.branches) {
+          logger.info(`tickets bootstrap: seedStatesAndBranches - Branch [${branchName}] - inserting/updating...`);
+          await q(
+            'INSERT INTO branches (tenant_id, cluster_id, name, status) VALUES (?, ?, ?, "ACTIVE") ON DUPLICATE KEY UPDATE status="ACTIVE"',
+            [tenantId, clusterId, branchName]
+          );
+        }
+        logger.info(`tickets bootstrap: seedStatesAndBranches - State [${item.stateName}] - branches seeded`);
+      }
+    }
+    logger.info('tickets bootstrap: states and branches seeded successfully');
+  } catch (error) {
+    logger.error('tickets bootstrap: failed to seed states and branches: ' + error.message);
+  }
 }
 
 let ensurePromise = null;
@@ -785,11 +926,19 @@ async function ensureTicketingSchema() {
 
   ensurePromise = (async () => {
     try {
+      logger.info('tickets bootstrap: ensuring legacy compatibility...');
       await ensureLegacyCompatibility();
+      logger.info('tickets bootstrap: ensuring base tables...');
       await ensureBaseTables();
+      logger.info('tickets bootstrap: ensuring ticket columns...');
       await ensureTicketColumns();
+      logger.info('tickets bootstrap: ensuring attachment columns...');
       await ensureAttachmentColumns();
+      logger.info('tickets bootstrap: ensuring feedback columns...');
+      await ensureFeedbackColumns();
+      logger.info('tickets bootstrap: migrating legacy ticket data...');
       await migrateLegacyTicketData();
+      logger.info('tickets bootstrap: seeding defaults...');
       await seedDefaults();
       logger.info('tickets bootstrap: schema ready');
       return { success: true };

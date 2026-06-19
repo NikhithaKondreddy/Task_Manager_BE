@@ -74,6 +74,7 @@ function buildPermissionSet(role) {
   const ticketRole = normalizeTicketRoleKey(role);
 
   if (ticketRole === TICKET_ROLE_KEYS.SUPER_ADMIN || ticketRole === TICKET_ROLE_KEYS.CENTRAL_IT_ADMIN) {
+    // Central IT Admin and Super Admin have full visibility
     return {
       readAll: true,
       create: true,
@@ -87,9 +88,14 @@ function buildPermissionSet(role) {
     };
   }
 
+  // Enforce scoped visibility for IT-facing roles so that frontend + backend
+  // follow the hierarchy:
+  // L1 -> assigned branch only, L2 -> assigned clusters, Regional -> assigned regions
   if (ticketRole === TICKET_ROLE_KEYS.REGIONAL_IT_MANAGER || ticketRole === TICKET_ROLE_KEYS.L2_ENGINEER) {
     return {
-      readAll: true,
+      readAll: false,
+      // scoped visibility: can read tickets within their assigned scope (regions/clusters)
+      readScoped: true,
       create: true,
       comment: true,
       update: true,
@@ -103,12 +109,14 @@ function buildPermissionSet(role) {
 
   if (ticketRole === TICKET_ROLE_KEYS.L1_ENGINEER) {
     return {
+      readAll: false,
       readAssigned: true,
       create: true,
       comment: true,
       update: true,
       assign: true,
-      readReports: false,
+      // Allow L1 engineers to view branch-level reports (scoped)
+      readReports: true,
     };
   }
 
@@ -124,13 +132,17 @@ function buildPermissionSet(role) {
 function allowedStatusTransitions(ticketRole, currentStatus) {
   const transitions = {
     DRAFT: ['OPEN'],
-    OPEN: ['ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'RESOLVED', 'CLOSED'],
-    ASSIGNED: ['IN_PROGRESS', 'PENDING_USER', 'RESOLVED', 'CLOSED'],
-    IN_PROGRESS: ['PENDING_USER', 'RESOLVED', 'CLOSED'],
-    PENDING_USER: ['IN_PROGRESS', 'RESOLVED', 'CLOSED'],
+    OPEN: ['ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'ON_HOLD', 'RESOLVED', 'CLOSED', 'ESCALATED', 'CANCELLED'],
+    ASSIGNED: ['IN_PROGRESS', 'PENDING_USER', 'ON_HOLD', 'RESOLVED', 'CLOSED', 'ESCALATED', 'CANCELLED'],
+    IN_PROGRESS: ['PENDING_USER', 'ON_HOLD', 'RESOLVED', 'CLOSED', 'ESCALATED', 'CANCELLED'],
+    PENDING_USER: ['IN_PROGRESS', 'ON_HOLD', 'RESOLVED', 'CLOSED', 'ESCALATED', 'CANCELLED'],
+    ON_HOLD: ['IN_PROGRESS', 'RESOLVED', 'CLOSED', 'ESCALATED', 'CANCELLED'],
     RESOLVED: ['CLOSED', 'REOPENED'],
     CLOSED: ['REOPENED'],
-    REOPENED: ['ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'RESOLVED', 'CLOSED'],
+    REOPENED: ['ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'ON_HOLD', 'RESOLVED', 'CLOSED', 'ESCALATED', 'CANCELLED'],
+    REOPEN_REQUESTED: ['ASSIGNED', 'IN_PROGRESS', 'CLOSED', 'CANCELLED'],
+    ESCALATED: ['ASSIGNED', 'IN_PROGRESS', 'ON_HOLD', 'RESOLVED', 'CLOSED', 'CANCELLED'],
+    CANCELLED: [],
   };
 
   if (ticketRole === TICKET_ROLE_KEYS.END_USER) {

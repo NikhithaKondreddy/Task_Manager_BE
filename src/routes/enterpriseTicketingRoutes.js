@@ -14,6 +14,9 @@ const adminController = require('../controllers/adminController');
 const approvalWorkflowController = require('../modules/tickets/controllers/approvalWorkflowController');
 
 const router = express.Router();
+const fs = require('fs').promises;
+const path = require('path');
+const logger = require('../logger');
 
 function q(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -22,23 +25,34 @@ function q(sql, params = []) {
 }
 
 router.get('/dashboard/admin', requireAuth, requireRole(['Admin', 'SuperAdmin']), async (req, res) => {
-  const data = await ticketService.getDashboard(req.user);
+  const data = await ticketService.getDashboard(req.user, req.query);
   res.json({ success: true, message: 'Admin dashboard fetched', data });
 });
 
 router.get('/dashboard/manager', requireAuth, requireRole(['Manager', 'Admin', 'SuperAdmin']), async (req, res) => {
-  const data = await ticketService.getDashboard(req.user);
+  const data = await ticketService.getDashboard(req.user, req.query);
   res.json({ success: true, message: 'Manager dashboard fetched', data });
 });
 
 router.get('/dashboard/engineer', requireAuth, requireRole(['IT Support', 'Manager', 'Admin', 'SuperAdmin']), async (req, res) => {
-  const data = await ticketService.getDashboard(req.user);
+  const data = await ticketService.getDashboard(req.user, req.query);
   res.json({ success: true, message: 'Engineer dashboard fetched', data });
 });
 
 router.get('/dashboard/requester', requireAuth, requireRole(['Employee', 'Client-Viewer', 'END_USER', 'Admin', 'SuperAdmin']), async (req, res) => {
-  const data = await ticketService.getDashboard(req.user);
+  const data = await ticketService.getDashboard(req.user, req.query);
   res.json({ success: true, message: 'Requester dashboard fetched', data });
+});
+
+// Generic dashboard endpoint for compatibility: returns role-appropriate dashboard
+router.get('/dashboard', requireAuth, async (req, res) => {
+  try {
+    const data = await ticketService.getDashboard(req.user, req.query);
+    return res.json({ success: true, message: 'Dashboard fetched', data });
+  } catch (err) {
+    logger.error('Error fetching dashboard (generic): ' + (err && err.stack ? err.stack : String(err)));
+    return res.status(500).json({ success: false, message: err && err.message ? err.message : 'Failed to fetch dashboard' });
+  }
 });
 
 router.get('/reports/tickets', requireAuth, async (req, res) => {
@@ -174,6 +188,69 @@ router.get('/engineers/workload', requireAuth, async (req, res) => {
   res.json({ success: true, data });
 });
 
+// L1/L2/Engineer-focused endpoints: consolidated payloads for dashboards, escalations, reports and chatbot
+router.get('/engineer/escalations', requireAuth, requireRole(['IT Support', 'L1 Engineer', 'L2 Engineer', 'Branch Engineer', 'Cluster Engineer', 'Regional Engineer']), async (req, res) => {
+  // Return hydrated tickets that are escalated and within user's scope
+  try {
+    const filters = { status: req.query.status || undefined, limit: req.query.limit || 100 };
+    // reuse ticketService.listTickets with escalation filter
+    const all = await ticketService.listTickets({ ...req.query, includeDrafts: false }, req.user);
+    const escalated = all.items.filter(t => t.currentEscalationLevel && Number(t.currentEscalationLevel) > 0);
+    return res.json({ success: true, total: escalated.length, items: escalated });
+  } catch (err) {
+    logger.error('engineer/escalations error: ' + (err && err.stack ? err.stack : String(err)));
+    return res.status(500).json({ success: false, message: 'Failed to fetch escalations' });
+  }
+});
+
+router.get('/engineer/reports', requireAuth, requireRole(['IT Support', 'L1 Engineer', 'L2 Engineer', 'Branch Engineer', 'Cluster Engineer', 'Regional Engineer']), async (req, res) => {
+  try {
+    const type = req.query.type || 'engineer-performance';
+    const payload = await reportService.buildReportPayload(req.user.tenant_id, type, req.query);
+    if (payload.type === 'application/json') return res.json({ success: true, data: payload.body });
+    res.setHeader('Content-Type', payload.type);
+    res.setHeader('Content-Disposition', `attachment; filename="${payload.filename}"`);
+    return res.send(payload.body);
+  } catch (err) {
+    logger.error('engineer/reports error: ' + (err && err.stack ? err.stack : String(err)));
+    return res.status(500).json({ success: false, message: 'Failed to generate report' });
+  }
+});
+
+router.get('/engineer/performance-dashboard', requireAuth, requireRole(['IT Support', 'L1 Engineer', 'L2 Engineer', 'Branch Engineer', 'Cluster Engineer', 'Regional Engineer']), async (req, res) => {
+  try {
+    const dashboard = await ticketService.getDashboard(req.user, req.query);
+    const workload = await workloadService.getWorkloadForEngineer(req.user.tenant_id, req.user._id) || {};
+    // recent tickets within scope
+    const recent = await ticketService.listTickets({ limit: 10, offset: 0 }, req.user);
+    return res.json({ success: true, data: { dashboard, workload, recent: recent.items } });
+  } catch (err) {
+    logger.error('engineer/performance-dashboard error: ' + (err && err.stack ? err.stack : String(err)));
+    // If it's an HttpError, preserve status and message for easier debugging
+    if (err && err.status) {
+      try {
+        return res.status(err.status).json(err.toJSON ? err.toJSON() : { success: false, message: err.message });
+      } catch (e) {
+        // fallthrough
+      }
+    }
+    return res.status(500).json({ success: false, message: err && err.message ? err.message : 'Failed to fetch performance dashboard' });
+  }
+});
+
+router.get('/engineer/chatbot', requireAuth, requireRole(['IT Support', 'L1 Engineer', 'L2 Engineer', 'Branch Engineer', 'Cluster Engineer', 'Regional Engineer', 'IT Admin', 'Central IT Admin', 'State Engineer', 'Regional IT Manager', 'SuperAdmin', 'Admin']), async (req, res) => {
+  try {
+    // provide user context and recent tickets to power a chatbot
+    const userContext = { id: req.user.id, name: req.user.name, email: req.user.email, role: req.user.role };
+    const recent = await ticketService.listTickets({ limit: 20, offset: 0 }, req.user);
+    const workloads = await workloadService.listWorkloads(req.user.tenant_id);
+    return res.json({ success: true, data: { user: userContext, recentTickets: recent.items, workloads } });
+  } catch (err) {
+    logger.error('engineer/chatbot error: ' + (err && err.stack ? err.stack : String(err)));
+    return res.status(500).json({ success: false, message: 'Failed to fetch chatbot context' });
+  }
+});
+
 router.get('/engineers/:id/workload', requireAuth, async (req, res) => {
   const data = await workloadService.getWorkloadForEngineer(req.user.tenant_id, req.params.id);
   res.json({ success: true, data });
@@ -283,8 +360,29 @@ router.get('/metrics/engineers', requireAuth, async (req, res) => {
 });
 
 router.get('/metrics/dashboard', requireAuth, async (req, res) => {
-  const data = await ticketService.getDashboard(req.user);
+  const data = await ticketService.getDashboard(req.user, req.query);
   res.json({ success: true, data });
+});
+
+// Dev helper: list and return login response JSON files for local development/testing
+router.get('/dev/login-responses', requireAuth, requireRole(['Admin', 'SuperAdmin']), async (req, res) => {
+  try {
+    const dir = path.resolve(__root, 'reports', 'login_responses');
+    const files = await fs.readdir(dir);
+    const out = [];
+    for (const f of files.filter((x) => x.endsWith('.json'))) {
+      try {
+        const txt = await fs.readFile(path.join(dir, f), 'utf8');
+        const json = JSON.parse(txt);
+        out.push({ file: f, json });
+      } catch (e) {
+        // skip unreadable files
+      }
+    }
+    res.json({ success: true, data: out });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
 });
 
 router.get('/settings', requireAuth, requireRole(['Admin', 'SuperAdmin']), adminController.getSettings);

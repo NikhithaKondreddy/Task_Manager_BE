@@ -5,24 +5,24 @@
 const rules = [
 
   {
-    ruleCode: 'ACCESS_OWN_RECORDS_ONLY',
-    description: 'Users can only access their own records unless role is ADMIN',
+    ruleCode: 'ADMIN_FULL_ACCESS',
+    description: 'Admins and Super Admins have full access',
     conditions: {
-      userRole: { $ne: 'ADMIN' },
-      resourceOwnerId: { $ne: '{{userId}}' }
+      userRole: { $in: ['ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] }
     },
-    action: 'DENY',
+    action: 'ALLOW',
     priority: 1,
     active: true,
     version: '1.0'
   },
   {
-    ruleCode: 'ADMIN_FULL_ACCESS',
-    description: 'Admins have full access',
+    ruleCode: 'ACCESS_OWN_RECORDS_ONLY',
+    description: 'Users can only access their own records unless role is ADMIN or SUPERADMIN',
     conditions: {
-      userRole: 'ADMIN'
+      userRole: { $ne: 'ADMIN' },
+      resourceOwnerId: { $ne: '{{userId}}' }
     },
-    action: 'ALLOW',
+    action: 'DENY',
     priority: 2,
     active: true,
     version: '1.0'
@@ -346,7 +346,7 @@ const rules = [
     ruleCode: 'user_creation',
     description: 'Validate user creation permissions',
     conditions: {
-      userRole: 'ADMIN',
+      userRole: { $in: ['ADMIN', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] },
       action: 'POST_CREATE'
     },
     action: 'ALLOW',
@@ -358,7 +358,7 @@ const rules = [
     ruleCode: 'user_update',
     description: 'Validate user update permissions',
     conditions: {
-      userRole: 'ADMIN',
+      userRole: { $in: ['ADMIN', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] },
       action: 'PUT_UPDATE_:ID'
     },
     action: 'ALLOW',
@@ -370,7 +370,7 @@ const rules = [
     ruleCode: 'user_delete',
     description: 'Validate user deletion permissions',
     conditions: {
-      userRole: 'ADMIN',
+      userRole: { $in: ['ADMIN', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] },
       action: 'DELETE_DELETE_:USER_ID'
     },
     action: 'ALLOW',
@@ -382,7 +382,7 @@ const rules = [
     ruleCode: 'user_list',
     description: 'Validate user listing permissions',
     conditions: {
-      userRole: { $in: ['ADMIN', 'MANAGER'] },
+      userRole: { $in: ['ADMIN', 'MANAGER', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] },
       action: 'GET_GETUSERS'
     },
     action: 'ALLOW',
@@ -394,7 +394,7 @@ const rules = [
     ruleCode: 'user_view',
     description: 'Validate viewing user details permissions',
     conditions: {
-      userRole: { $in: ['ADMIN', 'MANAGER'] },
+      userRole: { $in: ['ADMIN', 'MANAGER', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] },
       action: 'GET_GETUSERBYID_:ID'
     },
     action: 'ALLOW',

@@ -115,7 +115,7 @@ const listTickets = asyncHandler(async (req, res) => {
 });
 
 const getDashboard = asyncHandler(async (req, res) => {
-  const data = await ticketService.getDashboard(req.user);
+  const data = await ticketService.getDashboard(req.user, req.query);
   res.json({
     success: true,
     message: 'Ticket dashboard fetched',
@@ -212,21 +212,31 @@ const updateTicketSla = asyncHandler(async (req, res) => {
 });
 
 const setTicketStatus = asyncHandler(async (req, res) => {
-  const data = await ticketService.updateTicket(req.params.ticketId, { status: req.body.status || req.params.status }, req.user);
+  const status = req.body.status || req.params.status;
+  const payload = {
+    ...req.body,
+    status,
+  };
+  const data = await ticketService.updateTicket(req.params.ticketId, payload, req.user);
   res.json({ success: true, message: 'Ticket status updated', data });
 });
 
 const resolveTicket = asyncHandler(async (req, res) => {
   normalizePayload(req);
   assertValidRequest(req);
-  // support resolutionNotes and resolutionCode
-  const resolutionSummary = req.body.resolutionNotes || req.body.resolution_notes || req.body.summary || null;
+  const resolutionNotes = req.body.resolutionNotes || req.body.resolution_notes || req.body.resolution || req.body.notes || null;
+  const resolutionSummary = req.body.resolutionSummary || req.body.resolution_summary || req.body.summary || null;
   const resolutionCode = req.body.resolutionCode || req.body.resolution_code || null;
-  let notes = resolutionSummary || null;
+  let notes = resolutionNotes || null;
   if (resolutionCode) {
     notes = notes ? `${notes} [CODE:${String(resolutionCode)}]` : `[CODE:${String(resolutionCode)}]`;
   }
-  const data = await ticketService.updateTicket(req.params.ticketId, { status: 'RESOLVED', resolutionNotes: notes }, req.user);
+  const data = await ticketService.updateTicket(req.params.ticketId, {
+    ...req.body,
+    status: 'RESOLVED',
+    resolutionNotes: notes,
+    resolutionSummary: resolutionSummary
+  }, req.user);
   res.json({ success: true, message: 'Ticket resolved', data });
 });
 
@@ -234,7 +244,13 @@ const closeTicket = asyncHandler(async (req, res) => {
   normalizePayload(req);
   assertValidRequest(req);
   const feedback = req.body.feedback || req.body.resolutionNotes || req.body.resolution_notes || null;
-  const data = await ticketService.updateTicket(req.params.ticketId, { status: 'CLOSED', resolutionNotes: feedback }, req.user);
+  const closureRemarks = req.body.closureRemarks || req.body.closure_remarks || req.body.remarks || feedback || null;
+  const data = await ticketService.updateTicket(req.params.ticketId, {
+    ...req.body,
+    status: 'CLOSED',
+    resolutionNotes: feedback,
+    closureRemarks: closureRemarks
+  }, req.user);
   try {
     // stop SLA timers
     await ticketService.updateTicketSla(req.params.ticketId, { responseDueAt: null, resolutionDueAt: null, escalationDueAt: null, nextEscalationAt: null }, req.user);

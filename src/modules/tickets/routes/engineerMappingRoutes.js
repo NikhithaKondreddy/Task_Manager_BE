@@ -10,7 +10,16 @@ router.get('/', requireTicketViewAccess, engineerMappingController.listMappings)
 router.post(
   '/',
   requireTicketMappingManagementAccess,
-  [body('engineerId').optional().isString().trim(), body('engineer_id').optional().isString().trim()],
+  [
+    body('engineerId').optional().custom((val) => {
+      if (val !== undefined && val !== null && val !== '') return true;
+      throw new Error('engineerId must not be empty');
+    }),
+    body('engineer_id').optional().custom((val) => {
+      if (val !== undefined && val !== null && val !== '') return true;
+      throw new Error('engineer_id must not be empty');
+    }),
+  ],
   engineerMappingController.createMapping
 );
 

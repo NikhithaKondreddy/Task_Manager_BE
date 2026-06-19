@@ -24,6 +24,7 @@ const {
 
 const NotificationService = require('../services/notificationService');
 const errorResponse = require(__root + 'utils/errorResponse');
+const engineerMappingService = require('../modules/tickets/services/engineerMappingService');
 require('dotenv').config();
 let env;
 try { env = require(__root + 'config/env'); } catch (e) { env = require('../config/env'); }
@@ -109,13 +110,13 @@ function validateGuestState(isActive, isGuest) {
 
 router.use(requireAuth);
 
-router.get('/', requireRole('Admin', 'Manager'), authorize('users', 'read'), (req, res) => {
+router.get('/', requireRole('Admin', 'Manager', 'IT Admin'), authorize('users', 'read'), (req, res) => {
   return res.redirect(307, `${req.baseUrl}/getusers`);
 });
 
 
 
-router.put('/:id/status', requireRole('Admin'), authorize('users', 'update'), async (req, res) => {
+router.put('/:id/status', requireRole('Admin', 'IT Admin'), authorize('users', 'update'), async (req, res) => {
   try {
     const tenantId = resolveTenantId(req);
     const { id } = req.params;
@@ -152,7 +153,7 @@ router.put('/:id/status', requireRole('Admin'), authorize('users', 'update'), as
   }
 });
 
-router.put('/:id/role', requireRole('Admin'), authorize('users', 'update'), async (req, res) => {
+router.put('/:id/role', requireRole('Admin', 'IT Admin'), authorize('users', 'update'), async (req, res) => {
   try {
     const tenantId = resolveTenantId(req);
     const { id } = req.params;
@@ -172,11 +173,11 @@ router.put('/:id/role', requireRole('Admin'), authorize('users', 'update'), asyn
   }
 });
 
-router.post('/', requireRole('Admin'), authorize('users', 'create'), (req, res) => {
+router.post('/', requireRole('Admin', 'IT Admin'), authorize('users', 'create'), (req, res) => {
   return res.redirect(307, `${req.baseUrl}/create`);
 });
 
-router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manager'), authorize('users', 'read'), async (req, res) => {
+router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manager', 'IT Admin'), authorize('users', 'read'), async (req, res) => {
   const tenantId = resolveTenantId(req);
   const requesterRole = String(req.user?.role || '').toUpperCase();
   const params = [tenantId];
@@ -194,12 +195,19 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
     params.push(managerDepartmentId);
   }
 
+  let roleScope = '';
+  const isITAdmin = requesterRole === 'IT ADMIN' || requesterRole === 'CENTRAL IT ADMIN' || req.user?.normalized_role === 'IT_ADMIN' || req.user?.normalized_role === 'CENTRAL_IT_ADMIN';
+  if (isITAdmin) {
+    roleScope = ` AND u.role IN ('IT Admin', 'Central IT Admin', 'State Engineer', 'Regional Engineer', 'Regional IT Manager', 'IT Support', 'Cluster Engineer', 'Cluster Lead', 'L2 Engineer', 'Branch Engineer', 'L1 Engineer')`;
+  }
+
   const query = `
     SELECT 
-      u._id, u.public_id, u.name, u.role, u.email, u.title, u.isActive, u.phone, u.isGuest, u.department_public_id, d.name AS department_name
+      u._id, u.public_id, u.name, u.role, u.email, u.title, u.isActive, u.phone, u.isGuest, u.department_public_id, d.name AS department_name,
+      u.first_name, u.last_name, u.employee_id, u.state_id, u.region_id, u.cluster_id, u.branch_id, u.reporting_manager_id
     FROM users u
     LEFT JOIN departments d ON d.public_id = u.department_public_id AND d.tenant_id = u.tenant_id
-    WHERE u.tenant_id = ? AND u.role NOT IN ('SuperAdmin', 'Super-Admin')${departmentScope}
+    WHERE u.tenant_id = ? AND u.role NOT IN ('SuperAdmin', 'Super-Admin')${departmentScope}${roleScope}
   `;
 
   try {
@@ -345,6 +353,14 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
         isGuest: r.isGuest !== undefined ? Boolean(r.isGuest) : null,
         departmentPublicId: r.department_public_id || null,
         departmentName: r.department_name || null,
+        first_name: r.first_name || null,
+        last_name: r.last_name || null,
+        employee_id: r.employee_id || null,
+        state_id: r.state_id || null,
+        region_id: r.region_id || null,
+        cluster_id: r.cluster_id || null,
+        branch_id: r.branch_id || null,
+        reporting_manager_id: r.reporting_manager_id || null,
         current_task: currentTask,
         tasks: minimalTasks
       });
@@ -359,14 +375,20 @@ router.get("/getusers", ruleEngine(RULES.USER_LIST), requireRole('Admin', 'Manag
   }
 });
 
-router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), authorize('users', 'create'), async (req, res) => {
+router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin', 'IT Admin'), authorize('users', 'create'), async (req, res) => {
   try {
     const tenantId = resolveTenantId(req);
-    const { name, email, phone, role, departmentId, departmentName, title, isActive, isGuest } = req.body;
+    const {
+      name, email, phone, role, departmentId, departmentName, title, isActive, isGuest,
+      first_name, last_name, employee_id, state_id, region_id, cluster_id, branch_id,
+      skills, supported_categories, supportedCategories, reporting_manager_id
+    } = req.body;
     const persistedRole = persistRole(role);
     const normalizedTargetRole = normalizeRole(persistedRole);
 
-    if (!name || !email || !persistedRole || !title) {
+    const finalName = (name || `${first_name || ''} ${last_name || ''}`.trim()) || email.split('@')[0];
+
+    if (!finalName || !email || !persistedRole || !title) {
       return res.status(400).json({ success: false, message: 'Name, email, role and title required' });
     }
 
@@ -385,7 +407,7 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
       });
     }
 
-    if (normalizeRole(newRole) === 'IT_SUPPORT' && !['SUPER_ADMIN', 'ADMIN'].includes(creator)) {
+    if (normalizeRole(newRole) === 'IT_SUPPORT' && !['SUPER_ADMIN', 'ADMIN', 'IT_ADMIN'].includes(creator)) {
       return res.status(403).json({
         success: false,
         message: "Not allowed to create IT Support"
@@ -410,7 +432,10 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
       return res.status(403).json({ success: false, message: 'You cannot assign this role' });
     }
 
-    if (!departmentId && !departmentName) {
+    const creatorNorm = normalizeRole(req.user.role);
+    const isITAdminCreator = creatorNorm === 'IT_ADMIN' || creatorNorm === 'CENTRAL_IT_ADMIN';
+    const isITAdminTarget = normalizedTargetRole === 'IT_ADMIN' || normalizedTargetRole === 'CENTRAL_IT_ADMIN';
+    if (!isITAdminCreator && !isITAdminTarget && !departmentId && !departmentName) {
       return res.status(400).json({ success: false, message: 'Department assignment is mandatory' });
     }
 
@@ -445,12 +470,21 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
 
     const fields = ['tenant_id', 'public_id', 'name', 'email', 'password', 'phone', 'role'];
     const placeholders = ['?', '?', '?', '?', '?', '?', '?'];
-    const params = [tenantId, publicId, name, email, hashed, phone || null, persistedRole];
+    const params = [tenantId, publicId, finalName, email, hashed, phone || null, persistedRole];
 
     fields.push('title'); placeholders.push('?'); params.push(title);
     fields.push('department_public_id'); placeholders.push('?'); params.push(departmentPublicId);
     fields.push('isActive'); placeholders.push('?'); params.push(derivedIsActive);
     fields.push('isGuest'); placeholders.push('?'); params.push(derivedIsGuest);
+
+    if (first_name !== undefined) { fields.push('first_name'); placeholders.push('?'); params.push(first_name); }
+    if (last_name !== undefined) { fields.push('last_name'); placeholders.push('?'); params.push(last_name); }
+    if (employee_id !== undefined) { fields.push('employee_id'); placeholders.push('?'); params.push(employee_id); }
+    if (state_id !== undefined) { fields.push('state_id'); placeholders.push('?'); params.push(state_id); }
+    if (region_id !== undefined) { fields.push('region_id'); placeholders.push('?'); params.push(region_id); }
+    if (cluster_id !== undefined) { fields.push('cluster_id'); placeholders.push('?'); params.push(cluster_id); }
+    if (branch_id !== undefined) { fields.push('branch_id'); placeholders.push('?'); params.push(branch_id); }
+    if (reporting_manager_id !== undefined) { fields.push('reporting_manager_id'); placeholders.push('?'); params.push(reporting_manager_id); }
 
     const hasCreatedAt = await new Promise(resolve => {
       db.query(
@@ -516,7 +550,8 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
 
     const selSql = `
       SELECT u._id, u.public_id, u.name, u.email, u.role, u.title, u.isActive, u.phone, u.isGuest, u.tenant_id,
-             u.department_public_id, d.name AS department_name
+             u.department_public_id, d.name AS department_name,
+             u.first_name, u.last_name, u.employee_id, u.state_id, u.region_id, u.cluster_id, u.branch_id, u.reporting_manager_id
       FROM users u
       LEFT JOIN departments d ON d.public_id = u.department_public_id
       WHERE u._id = ? LIMIT 1
@@ -526,7 +561,7 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
         return res.status(201).json({
           success: true,
           data: {
-            id: publicId, name, email, role: persistedRole, title: title || null,
+            id: publicId, name: finalName, email, role: persistedRole, title: title || null,
             isActive: Boolean(derivedIsActive), phone: phone || null, tempPassword, setupToken,
             departmentPublicId, departmentName: resolvedDepartmentName
           }
@@ -534,6 +569,25 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
       }
 
       const user = saved[0];
+      
+      // Auto-create engineer mapping if applicable
+      if (normalizedTargetRole === 'IT_SUPPORT' || normalizedTargetRole === 'L1_ENGINEER' || normalizedTargetRole === 'L2_ENGINEER' || normalizedTargetRole === 'REGIONAL_IT_MANAGER') {
+        try {
+          await engineerMappingService.createMapping(tenantId, {
+            engineerId: insertId,
+            stateId: state_id || null,
+            regionId: region_id || null,
+            clusterId: cluster_id || null,
+            branchId: branch_id || null,
+            skills: skills || [],
+            supportedCategories: supportedCategories || supported_categories || [],
+            isActive: derivedIsActive
+          }, req.user);
+        } catch (e) {
+          logger.error('Failed to auto-create engineer mapping during user creation:', e.message);
+        }
+      }
+
       res.status(201).json({
         success: true,
         data: {
@@ -548,6 +602,14 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
           tenant_id: user.tenant_id || tenantId,
           departmentPublicId: user.department_public_id,
           departmentName: user.department_name || resolvedDepartmentName,
+          first_name: user.first_name || null,
+          last_name: user.last_name || null,
+          employee_id: user.employee_id || null,
+          state_id: user.state_id || null,
+          region_id: user.region_id || null,
+          cluster_id: user.cluster_id || null,
+          branch_id: user.branch_id || null,
+          reporting_manager_id: user.reporting_manager_id || null,
           tempPassword,
           setupToken
         }
@@ -571,10 +633,14 @@ router.post('/create', ruleEngine(RULES.USER_CREATE), requireRole('Admin'), auth
   }
 });
 
-router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), authorize('users', 'update'), async (req, res) => {
+router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin', 'IT Admin'), authorize('users', 'update'), async (req, res) => {
   const { id } = req.params;
   const tenantId = resolveTenantId(req);
-  let { name, title, email, role, isActive, isGuest, phone, departmentId, departmentName, status } = req.body;
+  let {
+    name, title, email, role, isActive, isGuest, phone, departmentId, departmentName, status,
+    first_name, last_name, employee_id, state_id, region_id, cluster_id, branch_id,
+    skills, supported_categories, supportedCategories, reporting_manager_id
+  } = req.body;
   const persistedRole = role !== undefined ? persistRole(role) : undefined;
 
   // Accept partial updates: only require name/email/role if present
@@ -583,6 +649,16 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
   }
 
   try {
+    const isNumeric = /^\d+$/.test(String(id));
+    const existingUserRows = await queryAsync(
+      `SELECT _id, public_id, name, role, first_name, last_name, isActive FROM users WHERE ${isNumeric ? '_id' : 'public_id'} = ? AND tenant_id = ? LIMIT 1`,
+      [id, tenantId]
+    );
+    if (!existingUserRows || existingUserRows.length === 0) {
+      return res.status(404).json({ success: false, message: "User not found" });
+    }
+    const existingUser = existingUserRows[0];
+
     if (role !== undefined && !canManageRole(req.user.role, persistedRole) && normalizeRole(req.user.role) !== normalizeRole(persistedRole)) {
       return res.status(403).json({ success: false, message: 'You cannot assign this role' });
     }
@@ -618,18 +694,32 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
       return res.status(400).json({ success: false, message: 'Invalid user state: cannot be both active and guest at the same time.' });
     }
 
-    const isNumeric = /^\d+$/.test(String(id));
-
     // Build dynamic update
     const updates = {};
-    if (name !== undefined) updates.name = name;
+    if (name !== undefined) {
+      updates.name = name;
+    } else if (first_name !== undefined || last_name !== undefined) {
+      const updatedFirstName = first_name !== undefined ? first_name : existingUser.first_name;
+      const updatedLastName = last_name !== undefined ? last_name : existingUser.last_name;
+      updates.name = `${updatedFirstName || ''} ${updatedLastName || ''}`.trim() || existingUser.name;
+    }
     if (title !== undefined) updates.title = title;
     if (email !== undefined) updates.email = email;
     if (role !== undefined) updates.role = persistedRole;
     if (isActive !== undefined) updates.isActive = isActive;
     if (isGuest !== undefined) updates.isGuest = isGuest;
     if (phone !== undefined) updates.phone = phone;
-    updates.department_public_id = departmentPublicId;
+    if (departmentId !== undefined || departmentName !== undefined) {
+      updates.department_public_id = departmentPublicId;
+    }
+    if (first_name !== undefined) updates.first_name = first_name;
+    if (last_name !== undefined) updates.last_name = last_name;
+    if (employee_id !== undefined) updates.employee_id = employee_id;
+    if (state_id !== undefined) updates.state_id = state_id;
+    if (region_id !== undefined) updates.region_id = region_id;
+    if (cluster_id !== undefined) updates.cluster_id = cluster_id;
+    if (branch_id !== undefined) updates.branch_id = branch_id;
+    if (reporting_manager_id !== undefined) updates.reporting_manager_id = reporting_manager_id;
 
     if (Object.keys(updates).length === 0) {
       return res.status(400).json(errorResponse.badRequest('No fields to update', 'NO_FIELDS_PROVIDED'));
@@ -650,7 +740,8 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
 
       const selectSql = `
         SELECT u._id, u.public_id, u.name, u.title, u.email, u.role, u.isActive, u.phone, u.isGuest, u.tenant_id,
-               u.department_public_id, d.name AS department_name
+               u.department_public_id, d.name AS department_name,
+               u.first_name, u.last_name, u.employee_id, u.state_id, u.region_id, u.cluster_id, u.branch_id, u.reporting_manager_id
         FROM users u
         LEFT JOIN departments d ON d.public_id = u.department_public_id
         WHERE ${isNumeric ? 'u._id' : 'u.public_id'} = ? AND u.tenant_id = ? LIMIT 1
@@ -678,6 +769,41 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
         }
 
         const u = user[0];
+
+        // Sync mapping in engineer_mapping if applicable
+        const checkRole = persistedRole || existingUser.role;
+        const normCheckRole = normalizeRole(checkRole);
+        if (normCheckRole === 'IT_SUPPORT' || normCheckRole === 'L1_ENGINEER' || normCheckRole === 'L2_ENGINEER' || normCheckRole === 'REGIONAL_IT_MANAGER') {
+          try {
+            const mappings = await engineerMappingService.listMappings(tenantId, { engineerId: u._id });
+            const activeState = isActive !== undefined ? isActive : existingUser.isActive;
+            if (mappings && mappings.length > 0) {
+              await engineerMappingService.updateMapping(tenantId, mappings[0].id, {
+                stateId: state_id !== undefined ? state_id : mappings[0].stateId,
+                regionId: region_id !== undefined ? region_id : mappings[0].regionId,
+                clusterId: cluster_id !== undefined ? cluster_id : mappings[0].clusterId,
+                branchId: branch_id !== undefined ? branch_id : mappings[0].branchId,
+                skills: skills || undefined,
+                supportedCategories: supportedCategories || supported_categories || undefined,
+                isActive: activeState
+              }, req.user);
+            } else {
+              await engineerMappingService.createMapping(tenantId, {
+                engineerId: u._id,
+                stateId: state_id !== undefined ? state_id : null,
+                regionId: region_id !== undefined ? region_id : null,
+                clusterId: cluster_id !== undefined ? cluster_id : null,
+                branchId: branch_id !== undefined ? branch_id : null,
+                skills: skills || [],
+                supportedCategories: supportedCategories || supported_categories || [],
+                isActive: activeState
+              }, req.user);
+            }
+          } catch (e) {
+            logger.error('Failed to sync engineer mapping during user update:', e.message);
+          }
+        }
+
         try {
           const auditController = require('./auditController');
           auditController.log({
@@ -705,7 +831,15 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
             isGuest: u.isGuest || false,
             tenant_id: u.tenant_id || tenantId,
             departmentPublicId: u.department_public_id,
-            departmentName: u.department_name || resolvedDepartmentName
+            departmentName: u.department_name || resolvedDepartmentName,
+            first_name: u.first_name || null,
+            last_name: u.last_name || null,
+            employee_id: u.employee_id || null,
+            state_id: u.state_id || null,
+            region_id: u.region_id || null,
+            cluster_id: u.cluster_id || null,
+            branch_id: u.branch_id || null,
+            reporting_manager_id: u.reporting_manager_id || null
           }
         });
 
@@ -728,7 +862,7 @@ router.put("/update/:id", ruleEngine(RULES.USER_UPDATE), requireRole('Admin'), a
   }
 });
 
-router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin', 'Manager'), authorize('users', 'read'), (req, res) => {
+router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin', 'Manager', 'IT Admin'), authorize('users', 'read'), (req, res) => {
   const { id } = req.params;
   const tenantId = resolveTenantId(req);
   const isNumeric = /^\d+$/.test(String(id));
@@ -750,7 +884,8 @@ router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin',
     }
     const query = `
     SELECT u.name, u.title, u.email, u.role, u.isActive, u.phone, u.public_id, u.isGuest,
-           u.department_public_id, d.name AS department_name
+           u.department_public_id, d.name AS department_name,
+           u.first_name, u.last_name, u.employee_id, u.state_id, u.region_id, u.cluster_id, u.branch_id, u.reporting_manager_id
     FROM users u
     LEFT JOIN departments d ON d.public_id = u.department_public_id
     WHERE ${isNumeric ? 'u._id' : 'u.public_id'} = ? AND u.tenant_id = ?${departmentScope}
@@ -771,14 +906,22 @@ router.get("/getuserbyid/:id", ruleEngine(RULES.USER_VIEW), requireRole('Admin',
         isGuest: out.isGuest || false,
         phone: out.phone,
         departmentPublicId: out.department_public_id,
-        departmentName: out.department_name
+        departmentName: out.department_name,
+        first_name: out.first_name || null,
+        last_name: out.last_name || null,
+        employee_id: out.employee_id || null,
+        state_id: out.state_id || null,
+        region_id: out.region_id || null,
+        cluster_id: out.cluster_id || null,
+        branch_id: out.branch_id || null,
+        reporting_manager_id: out.reporting_manager_id || null
       });
     });
   };
   run().catch((error) => res.status(500).json({ error: error.message }));
 });
 
-router.delete("/delete/:user_id", ruleEngine(RULES.USER_DELETE), requireRole('Admin'), authorize('users', 'deactivate'), (req, res) => {
+router.delete("/delete/:user_id", ruleEngine(RULES.USER_DELETE), requireRole('Admin', 'IT Admin'), authorize('users', 'deactivate'), (req, res) => {
   const { user_id } = req.params;
   const tenantId = resolveTenantId(req);
   const isNumeric = /^\d+$/.test(String(user_id));
@@ -792,15 +935,15 @@ router.delete("/delete/:user_id", ruleEngine(RULES.USER_DELETE), requireRole('Ad
   });
 });
 
-router.get('/:id', requireRole('Admin', 'Manager'), authorize('users', 'read'), (req, res) => {
+router.get('/:id', requireRole('Admin', 'Manager', 'IT Admin'), authorize('users', 'read'), (req, res) => {
   return res.redirect(307, `${req.baseUrl}/getuserbyid/${req.params.id}`);
 });
 
-router.put('/:id', requireRole('Admin'), authorize('users', 'update'), (req, res) => {
+router.put('/:id', requireRole('Admin', 'IT Admin'), authorize('users', 'update'), (req, res) => {
   return res.redirect(307, `${req.baseUrl}/update/${req.params.id}`);
 });
 
-router.delete('/:id', requireRole('Admin'), authorize('users', 'deactivate'), (req, res) => {
+router.delete('/:id', requireRole('Admin', 'IT Admin'), authorize('users', 'deactivate'), (req, res) => {
   return res.redirect(307, `${req.baseUrl}/delete/${req.params.id}`);
 });
 

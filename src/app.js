@@ -56,6 +56,7 @@ const bootstrapPromise = bootstrapService.ensureBootstrap()
 server.bootstrapReady = bootstrapPromise;
 
 app.disable('x-powered-by');
+app.use(cors());
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" },
   crossOriginEmbedderPolicy: false
@@ -348,7 +349,6 @@ app.use((req, res, next) => {
   } catch (e) { }
   return next();
 });
-app.use(cors());
 app.use(tenantMiddleware);
 
 
@@ -482,8 +482,10 @@ const {
 
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
 const auth = require('./middleware/auth');
+const AdminController = require(__root + 'controllers/adminController');
 
 // Consolidate mounting at both /api/path and /path
+app.get(['/api/platform/settings', '/platform/settings'], AdminController.getSettings);
 app.use(['/api/auth', '/auth'], AuthController);
 app.use(['/api/super-admin', '/super-admin'], superAdminRoutes);
 app.use(['/api/admin', '/admin'], auditRoutes.admin);
@@ -518,10 +520,15 @@ app.use(['/api/subcategories', '/subcategories'], auth, subcategoryRoutes);
 app.use(['/api/engineer-mappings', '/engineer-mappings'], auth, engineerMappingRoutes);
 app.use(['/api/sla-policies', '/sla-policies'], auth, slaRoutes);
 app.use(['/api/escalations', '/escalations'], auth, escalationRoutes);
-app.use(['/api/docs', '/docs'], express.static(path.join(__dirname, '..', 'docs')));
 
-const AdminController = require(__root + 'controllers/adminController');
-app.get(['/api/platform/settings', '/platform/settings'], AdminController.getSettings);
+// IT Admin routes
+app.use(['/api/it-admin/users', '/it-admin/users'], auth, StaffUser);
+app.use(['/api/it-admin/tickets', '/it-admin/tickets'], auth, ticketRoutes);
+app.use(['/api/it-admin/categories', '/api/it-admin/categories'], auth, categoryRoutes);
+app.use(['/api/it-admin/engineer-mappings', '/api/it-admin/engineer-mappings'], auth, engineerMappingRoutes);
+app.use(['/api/it-admin/sla-policies', '/api/it-admin/sla-policies'], auth, slaRoutes);
+
+app.use(['/api/docs', '/docs'], express.static(path.join(__dirname, '..', 'docs')));
 
 // Deprecated redirects removed (consolidated in route mounting above)
 

@@ -166,6 +166,24 @@ function mapTicketRow(row) {
     updatedAt: row.updated_at,
     lastActivityAt: row.last_activity_at || row.updated_at || row.created_at,
     lastStatusChangeAt: row.last_status_change_at || row.updated_at || row.created_at,
+    workStartAt: row.work_start_at || null,
+    work_start_at: row.work_start_at || null,
+    workDurationSeconds: row.work_duration_seconds == null ? 0 : Number(row.work_duration_seconds),
+    work_duration_seconds: row.work_duration_seconds == null ? 0 : Number(row.work_duration_seconds),
+    holdDurationSeconds: row.hold_duration_seconds == null ? 0 : Number(row.hold_duration_seconds),
+    hold_duration_seconds: row.hold_duration_seconds == null ? 0 : Number(row.hold_duration_seconds),
+    resolutionDurationSeconds: row.resolution_duration_seconds == null ? null : Number(row.resolution_duration_seconds),
+    resolution_duration_seconds: row.resolution_duration_seconds == null ? null : Number(row.resolution_duration_seconds),
+    closureDurationSeconds: row.closure_duration_seconds == null ? null : Number(row.closure_duration_seconds),
+    closure_duration_seconds: row.closure_duration_seconds == null ? null : Number(row.closure_duration_seconds),
+    holdReason: row.hold_reason || null,
+    hold_reason: row.hold_reason || null,
+    holdRemarks: row.hold_remarks || null,
+    hold_remarks: row.hold_remarks || null,
+    resolutionSummary: row.resolution_summary || null,
+    resolution_summary: row.resolution_summary || null,
+    closureRemarks: row.closure_remarks || null,
+    closure_remarks: row.closure_remarks || null,
   };
 
   ticket.tenant_id = row.tenant_id;
@@ -429,25 +447,67 @@ function getPermissionContext(user) {
   return { ticketRole, permissions };
 }
 
-function canAccessTicket(ticket, user) {
+async function canAccessTicket(ticket, user) {
   const { ticketRole, permissions } = getPermissionContext(user);
   if (!ticketRole) return false;
   if (permissions.readAll) return true;
 
-  if (ticketRole === TICKET_ROLE_KEYS.L1_ENGINEER) {
-    return [ticket.assigned_to, ticket.created_by_user_id, ticket.escalated_to_user_id].some((value) => Number(value) === Number(user._id));
+  const isDirectlyInvolved = [
+    ticket.assigned_to,
+    ticket.created_by_user_id,
+    ticket.escalated_to_user_id,
+    ticket.requested_for_user_id,
+    ticket.requester_user_id
+  ].some((value) => Number(value) === Number(user._id));
+
+  if (isDirectlyInvolved) return true;
+
+  const tenantId = user.tenant_id || 1;
+
+  if (ticketRole === TICKET_ROLE_KEYS.REGIONAL_IT_MANAGER) {
+    const mappings = await query(
+      'SELECT state_id, region_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1',
+      [tenantId, user._id]
+    );
+    const stateIds = mappings.map(m => m.state_id).filter(Boolean);
+    const regionIds = mappings.map(m => m.region_id).filter(Boolean);
+
+    return (
+      (ticket.location?.stateId && stateIds.includes(Number(ticket.location.stateId))) ||
+      (ticket.location?.regionId && regionIds.includes(Number(ticket.location.regionId)))
+    );
   }
 
-  return [ticket.requested_for_user_id, ticket.requester_user_id, ticket.created_by_user_id].some((value) => Number(value) === Number(user._id));
+  if (ticketRole === TICKET_ROLE_KEYS.L2_ENGINEER) {
+    const mappings = await query(
+      'SELECT cluster_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1',
+      [tenantId, user._id]
+    );
+    const clusterIds = mappings.map(m => m.cluster_id).filter(Boolean);
+
+    return ticket.location?.clusterId && clusterIds.includes(Number(ticket.location.clusterId));
+  }
+
+  if (ticketRole === TICKET_ROLE_KEYS.L1_ENGINEER) {
+    const mappings = await query(
+      'SELECT branch_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1',
+      [tenantId, user._id]
+    );
+    const branchIds = mappings.map(m => m.branch_id).filter(Boolean);
+
+    return ticket.location?.branchId && branchIds.includes(Number(ticket.location.branchId));
+  }
+
+  return false;
 }
 
-function assertTicketAccess(ticket, user) {
-  if (!canAccessTicket(ticket, user)) {
+async function assertTicketAccess(ticket, user) {
+  if (!(await canAccessTicket(ticket, user))) {
     throw new HttpError(403, 'Not allowed to access this ticket', 'TICKET_ACCESS_FORBIDDEN');
   }
 }
 
-function buildScopeWhere(user) {
+async function buildScopeWhere(user) {
   const { ticketRole, permissions } = getPermissionContext(user);
   if (!ticketRole) {
     throw new HttpError(403, 'Ticket role not configured', 'TICKET_ROLE_FORBIDDEN');
@@ -457,10 +517,82 @@ function buildScopeWhere(user) {
     return { where: [], params: [] };
   }
 
-  if (ticketRole === TICKET_ROLE_KEYS.L1_ENGINEER) {
+  const tenantId = user.tenant_id || 1;
+
+  const directConditions = [
+    't.assigned_to = ?',
+    't.created_by_user_id = ?',
+    't.escalated_to_user_id = ?',
+    't.requested_for_user_id = ?',
+    't.requester_user_id = ?'
+  ];
+  const directParams = [user._id, user._id, user._id, user._id, user._id];
+
+  if (ticketRole === TICKET_ROLE_KEYS.REGIONAL_IT_MANAGER) {
+    const mappings = await query(
+      'SELECT state_id, region_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1',
+      [tenantId, user._id]
+    );
+    const stateIds = mappings.map(m => m.state_id).filter(Boolean);
+    const regionIds = mappings.map(m => m.region_id).filter(Boolean);
+
+    const conditions = [...directConditions];
+    const params = [...directParams];
+
+    if (stateIds.length > 0) {
+      conditions.push(`t.state_id IN (${stateIds.map(() => '?').join(',')})`);
+      params.push(...stateIds);
+    }
+    if (regionIds.length > 0) {
+      conditions.push(`t.region_id IN (${regionIds.map(() => '?').join(',')})`);
+      params.push(...regionIds);
+    }
+
     return {
-      where: ['(t.assigned_to = ? OR t.created_by_user_id = ? OR t.escalated_to_user_id = ?)'],
-      params: [user._id, user._id, user._id],
+      where: [`(${conditions.join(' OR ')})`],
+      params
+    };
+  }
+
+  if (ticketRole === TICKET_ROLE_KEYS.L2_ENGINEER) {
+    const mappings = await query(
+      'SELECT cluster_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1',
+      [tenantId, user._id]
+    );
+    const clusterIds = mappings.map(m => m.cluster_id).filter(Boolean);
+
+    const conditions = [...directConditions];
+    const params = [...directParams];
+
+    if (clusterIds.length > 0) {
+      conditions.push(`t.cluster_id IN (${clusterIds.map(() => '?').join(',')})`);
+      params.push(...clusterIds);
+    }
+
+    return {
+      where: [`(${conditions.join(' OR ')})`],
+      params
+    };
+  }
+
+  if (ticketRole === TICKET_ROLE_KEYS.L1_ENGINEER) {
+    const mappings = await query(
+      'SELECT branch_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1',
+      [tenantId, user._id]
+    );
+    const branchIds = mappings.map(m => m.branch_id).filter(Boolean);
+
+    const conditions = [...directConditions];
+    const params = [...directParams];
+
+    if (branchIds.length > 0) {
+      conditions.push(`t.branch_id IN (${branchIds.map(() => '?').join(',')})`);
+      params.push(...branchIds);
+    }
+
+    return {
+      where: [`(${conditions.join(' OR ')})`],
+      params
     };
   }
 
@@ -479,12 +611,104 @@ function normalizeEmailList(value) {
 
 function normalizeLocation(payload = {}) {
   const location = payload.location || {};
-  return {
-    stateId: payload.stateId || payload.state_id || location.stateId || location.state_id || null,
-    regionId: payload.regionId || payload.region_id || location.regionId || location.region_id || null,
-    clusterId: payload.clusterId || payload.cluster_id || location.clusterId || location.cluster_id || null,
-    branchId: payload.branchId || payload.branch_id || location.branchId || location.branch_id || null,
+  const toId = (value) => {
+    if (value == null || value === '') return null;
+    const parsed = Number(value);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : null;
   };
+  return {
+    stateId: toId(payload.stateId || payload.state_id || location.stateId || location.state_id),
+    regionId: toId(payload.regionId || payload.region_id || location.regionId || location.region_id),
+    clusterId: toId(payload.clusterId || payload.cluster_id || location.clusterId || location.cluster_id),
+    branchId: toId(payload.branchId || payload.branch_id || location.branchId || location.branch_id),
+  };
+}
+
+function normalizeLocationNames(payload = {}) {
+  const location = payload.location || {};
+  const pick = (...values) => {
+    for (const value of values) {
+      if (value == null) continue;
+      const next = String(value).trim();
+      if (next) return next;
+    }
+    return null;
+  };
+
+  return {
+    stateName: pick(payload.stateName, payload.state, location.stateName, location.state),
+    regionName: pick(payload.regionName, payload.region, location.regionName, location.region),
+    clusterName: pick(payload.clusterName, payload.cluster, location.clusterName, location.cluster),
+    branchName: pick(payload.branchName, payload.branch, location.branchName, location.branch),
+  };
+}
+
+async function resolveLocationIdentifiers(tenantId, payload = {}, txQuery = query) {
+  const resolved = normalizeLocation(payload);
+  const names = normalizeLocationNames(payload);
+
+  if (!resolved.stateId && names.stateName) {
+    const stateRows = await txQuery(
+      `SELECT id FROM states WHERE tenant_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?)) LIMIT 1`,
+      [tenantId, names.stateName]
+    );
+    resolved.stateId = stateRows[0]?.id || null;
+  }
+
+  if (!resolved.regionId && names.regionName) {
+    const params = [tenantId, names.regionName];
+    const regionRows = await txQuery(
+      `SELECT id, state_id FROM regions WHERE tenant_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))${resolved.stateId ? ' AND state_id = ?' : ''} LIMIT 1`,
+      resolved.stateId ? params.concat([resolved.stateId]) : params
+    );
+    resolved.regionId = regionRows[0]?.id || null;
+    if (!resolved.stateId) resolved.stateId = regionRows[0]?.state_id || null;
+  }
+
+  if (!resolved.clusterId && names.clusterName) {
+    const params = [tenantId, names.clusterName];
+    const clusterRows = await txQuery(
+      `SELECT id, region_id FROM clusters WHERE tenant_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))${resolved.regionId ? ' AND region_id = ?' : ''} LIMIT 1`,
+      resolved.regionId ? params.concat([resolved.regionId]) : params
+    );
+    resolved.clusterId = clusterRows[0]?.id || null;
+    if (!resolved.regionId) resolved.regionId = clusterRows[0]?.region_id || null;
+  }
+
+  if (!resolved.branchId && names.branchName) {
+    const params = [tenantId, names.branchName];
+    const branchRows = await txQuery(
+      `SELECT id, cluster_id FROM branches WHERE tenant_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?))${resolved.clusterId ? ' AND cluster_id = ?' : ''} LIMIT 1`,
+      resolved.clusterId ? params.concat([resolved.clusterId]) : params
+    );
+    resolved.branchId = branchRows[0]?.id || null;
+    if (!resolved.clusterId) resolved.clusterId = branchRows[0]?.cluster_id || null;
+  }
+
+  if (resolved.branchId && !resolved.clusterId) {
+    const rows = await txQuery(`SELECT cluster_id FROM branches WHERE tenant_id = ? AND id = ? LIMIT 1`, [tenantId, resolved.branchId]);
+    resolved.clusterId = rows[0]?.cluster_id || null;
+  }
+  if (resolved.clusterId && !resolved.regionId) {
+    const rows = await txQuery(`SELECT region_id FROM clusters WHERE tenant_id = ? AND id = ? LIMIT 1`, [tenantId, resolved.clusterId]);
+    resolved.regionId = rows[0]?.region_id || null;
+  }
+  if (resolved.regionId && !resolved.stateId) {
+    const rows = await txQuery(`SELECT state_id FROM regions WHERE tenant_id = ? AND id = ? LIMIT 1`, [tenantId, resolved.regionId]);
+    resolved.stateId = rows[0]?.state_id || null;
+  }
+
+  if ((names.stateName || names.regionName || names.clusterName || names.branchName) && !(resolved.stateId || resolved.regionId || resolved.clusterId || resolved.branchId)) {
+    logger.warn('ticket location resolution failed from names', {
+      tenantId,
+      stateName: names.stateName,
+      regionName: names.regionName,
+      clusterName: names.clusterName,
+      branchName: names.branchName,
+    });
+  }
+
+  return resolved;
 }
 
 async function persistAttachments(ticketId, ticketPublicId, attachments = [], commentId = null, txQuery) {
@@ -572,8 +796,67 @@ async function createTicket(input, user) {
     throw new HttpError(404, 'Assigned engineer not found', 'ASSIGNEE_NOT_FOUND');
   }
   const initialStatus = !isDraft && explicitAssignee && status === 'OPEN' ? 'ASSIGNED' : status;
-  const location = normalizeLocation(input);
-  await validateCategorySelection(tenantId, input.categoryId || input.category_id || null, input.subcategoryId || input.subcategory_id || null);
+  const location = await resolveLocationIdentifiers(tenantId, input);
+  const rawCategoryId = input.categoryId || input.category_id || null;
+  const rawSubcategoryId = input.subcategoryId || input.subcategory_id || null;
+  const validatedCategorySelection = await validateCategorySelection(tenantId, rawCategoryId, rawSubcategoryId);
+  const resolvedCategoryId =
+    validatedCategorySelection?.category?.id ||
+    validatedCategorySelection?.subcategory?.category_id ||
+    rawCategoryId ||
+    null;
+  const resolvedSubcategoryId = validatedCategorySelection?.subcategory?.id || rawSubcategoryId || null;
+
+  // Duplicate ticket validation
+  let duplicateCheck = [];
+  // Duplicate detection should be category-aware only. If category is not resolved,
+  // do not force a synthetic category (like 0), which can cause false positives.
+  if (resolvedCategoryId) {
+    duplicateCheck = await query(
+      `SELECT id, ticket_id, title, status, category_id, subcategory_id FROM tickets 
+       WHERE tenant_id = ? 
+         AND requester_user_id = ? 
+         AND category_id = ? 
+         AND status IN ('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'REOPENED')
+       LIMIT 1`,
+      [tenantId, requestedForUser._id, resolvedCategoryId]
+    );
+  }
+
+  if (duplicateCheck && duplicateCheck.length > 0) {
+    if (!input.overrideReason && !input.override_reason) {
+      throw new HttpError(409, 'Duplicate ticket detected', 'DUPLICATE_TICKET_DETECTED', {
+        existingTicketId: duplicateCheck[0].ticket_id,
+        existingTicketTitle: duplicateCheck[0].title,
+        existingTicketStatus: duplicateCheck[0].status,
+        duplicateCategoryId: duplicateCheck[0].category_id,
+        duplicateSubcategoryId: duplicateCheck[0].subcategory_id,
+        requestedCategoryId: resolvedCategoryId,
+        requestedSubcategoryId: resolvedSubcategoryId,
+      });
+    }
+  }
+
+  // Reopen workflow validation
+  let reopenStatus = initialStatus;
+  let reopenAssignee = explicitAssignee ? explicitAssignee._id : null;
+  const referencedTicketId = input.referencedTicketId || input.referenced_ticket_id || null;
+
+  if (referencedTicketId) {
+    const oldTicket = await query(
+      `SELECT id, ticket_id, status, assigned_to FROM tickets WHERE tenant_id = ? AND (id = ? OR ticket_id = ?) LIMIT 1`,
+      [tenantId, referencedTicketId, String(referencedTicketId)]
+    );
+    if (!oldTicket || oldTicket.length === 0) {
+      throw new HttpError(404, 'Referenced ticket not found', 'REFERENCED_TICKET_NOT_FOUND');
+    }
+    const ot = oldTicket[0];
+    if (ot.status !== 'RESOLVED' && ot.status !== 'CLOSED') {
+      throw new HttpError(400, 'Referenced ticket is not resolved or closed', 'REFERENCED_TICKET_NOT_RESOLVED_OR_CLOSED');
+    }
+    reopenStatus = 'REOPEN_REQUESTED';
+    reopenAssignee = ot.assigned_to || reopenAssignee;
+  }
 
   const ccRecipients = normalizeEmailList(input.ccRecipients || input.cc_recipients);
   const policy = await getSlaPolicy(tenantId, priority);
@@ -619,9 +902,11 @@ async function createTicket(input, user) {
             next_escalation_at,
             last_activity_at,
             last_status_change_at,
-            is_draft
+            is_draft,
+            referenced_ticket_id,
+            override_reason
           )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), NOW(), ?, ?, ?)
       `,
       [
         tenantId,
@@ -632,9 +917,9 @@ async function createTicket(input, user) {
         requestedForUser._id,
         user._id,
         validator.normalizeEmail(String(requesterEmail)),
-        initialStatus,
+        reopenStatus,
         priority,
-        explicitAssignee ? explicitAssignee._id : null,
+        reopenAssignee,
         'IT Support',
         'ticketing',
         input.source || 'api',
@@ -644,14 +929,16 @@ async function createTicket(input, user) {
         location.regionId,
         location.clusterId,
         location.branchId,
-        input.categoryId || input.category_id || null,
-        input.subcategoryId || input.subcategory_id || null,
+        resolvedCategoryId,
+        resolvedSubcategoryId,
         safeJsonStringify(ccRecipients, '[]'),
         dueDates.responseDueAt,
         dueDates.resolutionDueAt,
         dueDates.escalationDueAt,
         dueDates.nextEscalationAt,
         Number(isDraft),
+        referencedTicketId ? (typeof referencedTicketId === 'number' ? referencedTicketId : null) : null,
+        input.overrideReason || input.override_reason || null,
       ]
     );
 
@@ -745,7 +1032,7 @@ async function updateDraft(id, input, user) {
   }
 
   await validateCategorySelection(tenantId, input.categoryId || input.category_id || ticket.categoryId, input.subcategoryId || input.subcategory_id || ticket.subcategoryId);
-  const location = normalizeLocation({ ...ticket.location, ...input });
+  const location = await resolveLocationIdentifiers(tenantId, { ...ticket.location, ...input });
   const ccRecipients = input.ccRecipients || input.cc_recipients ? normalizeEmailList(input.ccRecipients || input.cc_recipients) : ticket.ccRecipients;
 
   await withTransaction(async (tx) => {
@@ -839,7 +1126,7 @@ async function deleteDraft(id, user) {
 }
 
 async function listTickets(filters, user) {
-  const scope = buildScopeWhere(user);
+  const scope = await buildScopeWhere(user);
   const where = ['t.tenant_id = ?'].concat(scope.where);
   const params = [user.tenant_id].concat(scope.params);
   const includeDrafts = String(filters.includeDrafts || filters.include_drafts || 'false').toLowerCase() === 'true';
@@ -870,9 +1157,15 @@ async function listTickets(filters, user) {
     }
   }
 
-  if (filters.assignedTo || filters.assigned_to) {
+  const assignedFilter =
+    filters.assignedEngineerId ||
+    filters.assigned_engineer_id ||
+    filters.assignedTo ||
+    filters.assigned_to;
+
+  if (assignedFilter) {
     where.push('(t.assigned_to = ? OR assigned.public_id = ?)');
-    params.push(filters.assignedTo || filters.assigned_to, String(filters.assignedTo || filters.assigned_to));
+    params.push(assignedFilter, String(assignedFilter));
   }
 
   if (filters.requestedFor || filters.requested_for_user_id) {
@@ -938,12 +1231,67 @@ async function listTickets(filters, user) {
   };
 }
 
-async function getDashboard(user) {
-  const scope = buildScopeWhere(user);
-  const where = ['tenant_id = ?'].concat(scope.where.map((item) => item.replace(/t\./g, '')));
+async function getDashboard(user, filters = {}) {
+  const scope = await buildScopeWhere(user);
+  // keep a version with ticket alias (t.) for queries that join other tables,
+  // and an unaliased version for simple FROM tickets queries.
+  const whereWithT = ['t.tenant_id = ?'].concat(scope.where);
   const params = [user.tenant_id].concat(scope.params);
 
-  const rows = await query(
+  // Apply optional dashboard filters: category, state, region, engineer
+  const f = filters || {};
+
+  // Assigned engineer filter (accepts internal id or public_id)
+  const assignedFilter = f.assignedEngineerId || f.assigned_engineer_id || f.assignedTo || f.assigned_to || f.engineer;
+  if (assignedFilter) {
+    // try to resolve to internal _id
+    try {
+      const assignee = await findUserByIdOrPublicId(user.tenant_id, assignedFilter);
+      if (assignee && assignee._id) {
+        whereWithT.push('t.assigned_to = ?');
+        params.push(assignee._id);
+      } else if (!Number.isNaN(Number(assignedFilter))) {
+        whereWithT.push('t.assigned_to = ?');
+        params.push(Number(assignedFilter));
+      } else {
+        // no matching assignee -> force empty result
+        whereWithT.push('1 = 0');
+      }
+    } catch (e) {
+      whereWithT.push('1 = 0');
+    }
+  }
+
+  // Category filter (accept id or exact name)
+  if (f.categoryId || f.category_id) {
+    whereWithT.push('t.category_id = ?');
+    params.push(f.categoryId || f.category_id);
+  } else if (f.category) {
+    whereWithT.push('t.category_id IN (SELECT id FROM categories WHERE tenant_id = ? AND UPPER(TRIM(category_name)) = UPPER(TRIM(?)))');
+    params.push(user.tenant_id, String(f.category).trim());
+  }
+
+  // State filter (accept id or exact name)
+  if (f.stateId || f.state_id) {
+    whereWithT.push('t.state_id = ?');
+    params.push(f.stateId || f.state_id);
+  } else if (f.state) {
+    whereWithT.push('t.state_id IN (SELECT id FROM states WHERE tenant_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?)))');
+    params.push(user.tenant_id, String(f.state).trim());
+  }
+
+  // Region filter (accept id or exact name)
+  if (f.regionId || f.region_id) {
+    whereWithT.push('t.region_id = ?');
+    params.push(f.regionId || f.region_id);
+  } else if (f.region) {
+    whereWithT.push('t.region_id IN (SELECT id FROM regions WHERE tenant_id = ? AND UPPER(TRIM(name)) = UPPER(TRIM(?)))');
+    params.push(user.tenant_id, String(f.region).trim());
+  }
+
+  const whereNoAlias = whereWithT.map((item) => item.replace(/\bt\./g, ''));
+  // summary counts
+  const countsRows = await query(
     `
       SELECT
         COUNT(*) AS total,
@@ -951,35 +1299,174 @@ async function getDashboard(user) {
         SUM(CASE WHEN UPPER(status) = 'ASSIGNED' THEN 1 ELSE 0 END) AS assigned_count,
         SUM(CASE WHEN UPPER(status) = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS in_progress_count,
         SUM(CASE WHEN UPPER(status) = 'PENDING_USER' THEN 1 ELSE 0 END) AS pending_user_count,
+        SUM(CASE WHEN UPPER(status) = 'ON_HOLD' THEN 1 ELSE 0 END) AS on_hold_count,
         SUM(CASE WHEN UPPER(status) = 'RESOLVED' THEN 1 ELSE 0 END) AS resolved_count,
         SUM(CASE WHEN UPPER(status) = 'CLOSED' THEN 1 ELSE 0 END) AS closed_count,
         SUM(CASE WHEN response_due_at IS NOT NULL AND responded_at IS NULL AND NOW() > response_due_at THEN 1 ELSE 0 END) AS response_breached_count,
         SUM(CASE WHEN resolution_due_at IS NOT NULL AND UPPER(status) NOT IN ('RESOLVED', 'CLOSED', 'DRAFT') AND NOW() > resolution_due_at THEN 1 ELSE 0 END) AS resolution_breached_count
       FROM tickets
-      WHERE ${where.join(' AND ')}
+      WHERE ${whereNoAlias.join(' AND ')}
         AND COALESCE(is_draft, 0) = 0
     `,
     params
   );
 
-  const row = rows[0] || {};
+  const counts = countsRows[0] || {};
+
+  const summary = {
+    total: Number(counts.total || 0),
+    open: Number(counts.open_count || 0),
+    assigned: Number(counts.assigned_count || 0),
+    inProgress: Number(counts.in_progress_count || 0),
+    pendingUser: Number(counts.pending_user_count || 0),
+    resolved: Number(counts.resolved_count || 0),
+    closed: Number(counts.closed_count || 0),
+    responseBreached: Number(counts.response_breached_count || 0),
+    resolutionBreached: Number(counts.resolution_breached_count || 0),
+  };
+
+  // ticket status distribution (include ON_HOLD)
+  const ticketStatusDistribution = {
+    open: summary.open,
+    inProgress: summary.inProgress,
+    onHold: Number(counts.on_hold_count || 0),
+    resolved: summary.resolved,
+    closed: summary.closed,
+  };
+
+  // recent tickets (minimal shape for dashboard)
+  const recentRows = await query(
+    `
+      ${baseTicketSelect}
+      WHERE ${whereWithT.join(' AND ')}
+        AND COALESCE(t.is_draft, 0) = 0
+      ORDER BY t.created_at DESC
+      LIMIT 10
+    `,
+    params
+  );
+
+  const recentTickets = (recentRows || []).map((r) => ({
+    ticketId: r.ticket_id,
+    title: r.title,
+    status: normalizeTicketStatus(r.status, 'OPEN'),
+    priority: normalizePriority(r.priority, 'MEDIUM'),
+    createdBy: r.created_by_name || r.created_by_public_id || null,
+    assignedTo: r.assigned_to_name || null,
+    createdAt: r.created_at,
+  }));
+
+  // priority-wise counts
+  const priorityRows = await query(
+    `
+      SELECT UPPER(COALESCE(priority, 'MEDIUM')) AS priority, COUNT(*) AS count
+      FROM tickets
+      WHERE ${whereNoAlias.join(' AND ')}
+        AND COALESCE(is_draft, 0) = 0
+      GROUP BY UPPER(COALESCE(priority, 'MEDIUM'))
+    `,
+    params
+  );
+
+  const priorityWise = {};
+  (priorityRows || []).forEach((r) => {
+    priorityWise[String(r.priority || 'MEDIUM').toLowerCase()] = Number(r.count || 0);
+  });
+
+  // category-wise counts
+  const categoryRows = await query(
+    `
+      SELECT COALESCE(c.category_name, 'Uncategorized') AS category, COUNT(*) AS count
+      FROM tickets t
+      LEFT JOIN categories c ON c.id = t.category_id
+      WHERE ${whereWithT.join(' AND ')}
+        AND COALESCE(t.is_draft, 0) = 0
+      GROUP BY COALESCE(c.category_name, 'Uncategorized')
+    `,
+    params
+  );
+
+  const categoryWise = {};
+  (categoryRows || []).forEach((r) => {
+    categoryWise[String(r.category || 'Uncategorized')] = Number(r.count || 0);
+  });
+
+  // SLA summary
+  const breached = Number(counts.response_breached_count || 0) + Number(counts.resolution_breached_count || 0);
+  const sla = {
+    withinSLA: Math.max(0, summary.total - breached),
+    breached,
+  };
+
+  // resolution trends (last 30 days) - resolved tickets per day
+  const resolutionRows = await query(
+    `
+      SELECT DATE(t.resolved_at) AS date, COUNT(*) AS count
+      FROM tickets t
+      WHERE ${whereWithT.join(' AND ')}
+        AND t.resolved_at IS NOT NULL
+        AND t.resolved_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)
+      GROUP BY DATE(t.resolved_at)
+      ORDER BY DATE(t.resolved_at) ASC
+    `,
+    params
+  );
+
+  const resolutionTrends = (resolutionRows || []).length === 0
+    ? { message: 'No chart data available', data: [] }
+    : (resolutionRows || []).map((r) => ({ date: r.date, resolved: Number(r.count || 0) }));
+
+  // recent ticket activity - last 10 history entries scoped to user
+  const activityRows = await query(
+    `
+      SELECT
+        h.action,
+        h.field_name,
+        h.from_value,
+        h.to_value,
+        h.notes,
+        h.created_at,
+        u.public_id AS actor_public_id,
+        u.name AS actor_name,
+        t.ticket_id
+      FROM ticket_history h
+      LEFT JOIN users u ON u._id = h.actor_user_id
+      INNER JOIN tickets t ON t.id = h.ticket_id
+      WHERE ${whereWithT.join(' AND ')}
+      ORDER BY h.created_at DESC
+      LIMIT 10
+    `,
+    params
+  );
+
+  const recentTicketActivityItems = (activityRows || []).map((a) => ({
+    action: a.action,
+    performedBy: a.actor_name || a.actor_public_id || null,
+    timestamp: a.created_at,
+    details: a.notes || (a.field_name ? `${a.field_name}: ${a.from_value || ''} -> ${a.to_value || ''}` : null),
+    ticketId: a.ticket_id,
+  }));
+
+  const recentTicketActivity = (recentTicketActivityItems.length === 0)
+    ? { headers: ['Action', 'Performed By', 'Timestamp', 'Details'], items: [], message: 'No activity found.' }
+    : { headers: ['Action', 'Performed By', 'Timestamp', 'Details'], items: recentTicketActivityItems };
+
   return {
-    total: Number(row.total || 0),
-    open: Number(row.open_count || 0),
-    assigned: Number(row.assigned_count || 0),
-    inProgress: Number(row.in_progress_count || 0),
-    pendingUser: Number(row.pending_user_count || 0),
-    resolved: Number(row.resolved_count || 0),
-    closed: Number(row.closed_count || 0),
-    responseBreached: Number(row.response_breached_count || 0),
-    resolutionBreached: Number(row.resolution_breached_count || 0),
+    summary,
+    recentTickets,
+    priorityWise,
+    categoryWise,
+    sla,
+    ticketStatusDistribution,
+    resolutionTrends,
+    recentTicketActivity,
   };
 }
 
 async function getTicket(id, user) {
   const row = await getTicketOrThrow(user.tenant_id, id);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
   return hydrateTicket(row, user);
 }
 
@@ -987,7 +1474,7 @@ async function updateTicket(id, input, user) {
   const tenantId = user.tenant_id;
   const existingRow = await getTicketOrThrow(tenantId, id);
   const existing = mapTicketRow(existingRow);
-  assertTicketAccess(existing, user);
+  await assertTicketAccess(existing, user);
 
   const { ticketRole, permissions } = getPermissionContext(user);
   if (!permissions.update) {
@@ -1045,7 +1532,7 @@ async function updateTicket(id, input, user) {
     input.subcategoryId || input.subcategory_id || existing.subcategoryId
   );
 
-  const location = normalizeLocation({
+  const location = await resolveLocationIdentifiers(tenantId, {
     ...existing.location,
     ...input,
     location: { ...existing.location, ...(input.location || {}) },
@@ -1055,6 +1542,71 @@ async function updateTicket(id, input, user) {
     : existing.ccRecipients;
   const categoryId = input.categoryId !== undefined || input.category_id !== undefined ? (input.categoryId || input.category_id || null) : existing.categoryId;
   const subcategoryId = input.subcategoryId !== undefined || input.subcategory_id !== undefined ? (input.subcategoryId || input.subcategory_id || null) : existing.subcategoryId;
+
+  const now = new Date();
+  let workStartAt = existing.workStartAt;
+  let workDurationSeconds = existing.workDurationSeconds || 0;
+  let holdDurationSeconds = existing.holdDurationSeconds || 0;
+  let resolutionDurationSeconds = existing.resolutionDurationSeconds;
+  let closureDurationSeconds = existing.closureDurationSeconds;
+
+  if (nextStatus !== existing.status) {
+    const lastChange = existing.lastStatusChangeAt ? new Date(existing.lastStatusChangeAt) : new Date(existing.createdAt);
+    const delta = Math.max(0, Math.floor((now - lastChange) / 1000));
+
+    if (existing.status === 'IN_PROGRESS') {
+      workDurationSeconds += delta;
+    }
+    if (existing.status === 'ON_HOLD') {
+      holdDurationSeconds += delta;
+    }
+
+    if (nextStatus === 'IN_PROGRESS') {
+      if (!workStartAt) {
+        workStartAt = now;
+      }
+    }
+    if (nextStatus === 'RESOLVED') {
+      if (!resolutionDurationSeconds) {
+        const createdTime = new Date(existing.createdAt);
+        resolutionDurationSeconds = Math.max(0, Math.floor((now - createdTime) / 1000));
+      }
+    }
+    if (nextStatus === 'CLOSED') {
+      if (!closureDurationSeconds) {
+        const createdTime = new Date(existing.createdAt);
+        closureDurationSeconds = Math.max(0, Math.floor((now - createdTime) / 1000));
+      }
+    }
+  }
+
+  // Mandatory fields check on status transitions
+  if (nextStatus === 'ON_HOLD') {
+    const holdReason = input.holdReason || input.hold_reason;
+    const holdRemarks = input.holdRemarks || input.hold_remarks || input.remarks;
+    if (!holdReason) {
+      throw new HttpError(400, 'Hold reason is mandatory', 'HOLD_REASON_REQUIRED');
+    }
+    if (!holdRemarks || !String(holdRemarks).trim()) {
+      throw new HttpError(400, 'Hold remarks are mandatory', 'HOLD_REMARKS_REQUIRED');
+    }
+  }
+  if (nextStatus === 'RESOLVED') {
+    const resSummary = input.resolutionSummary || input.resolution_summary || input.summary;
+    const resNotes = input.resolutionNotes || input.resolution_notes || input.notes || input.resolution;
+    if (!resSummary || !String(resSummary).trim()) {
+      throw new HttpError(400, 'Resolution summary is mandatory', 'RESOLUTION_SUMMARY_REQUIRED');
+    }
+    if (!resNotes || !String(resNotes).trim()) {
+      throw new HttpError(400, 'Resolution notes are mandatory', 'RESOLUTION_NOTES_REQUIRED');
+    }
+  }
+  if (nextStatus === 'CLOSED') {
+    const cloRemarks = input.closureRemarks || input.closure_remarks || input.remarks || input.feedback;
+    if (!cloRemarks || !String(cloRemarks).trim()) {
+      throw new HttpError(400, 'Closure remarks are mandatory', 'CLOSURE_REMARKS_REQUIRED');
+    }
+  }
 
   const updates = {
     title: input.subject !== undefined || input.title !== undefined ? String(input.subject || input.title || existing.subject).trim() : existing.subject,
@@ -1072,9 +1624,18 @@ async function updateTicket(id, input, user) {
     priority: newPriority,
     status: nextStatus,
     assigned_to: assignee ? assignee._id : (assignedToInput === null || assignedToInput === '' ? null : existing.assigned_to),
-    resolution_notes: input.resolutionNotes !== undefined || input.resolution_notes !== undefined
-      ? (input.resolutionNotes || input.resolution_notes || null)
+    resolution_notes: input.resolutionNotes !== undefined || input.resolution_notes !== undefined || input.resolution !== undefined || input.notes !== undefined
+      ? (input.resolutionNotes || input.resolution_notes || input.resolution || input.notes || null)
       : existing.resolutionNotes || null,
+    work_start_at: workStartAt,
+    work_duration_seconds: workDurationSeconds,
+    hold_duration_seconds: holdDurationSeconds,
+    resolution_duration_seconds: resolutionDurationSeconds,
+    closure_duration_seconds: closureDurationSeconds,
+    hold_reason: input.holdReason !== undefined ? input.holdReason : (input.hold_reason !== undefined ? input.hold_reason : (nextStatus === 'ON_HOLD' ? input.holdReason || input.hold_reason || null : existing.holdReason)),
+    hold_remarks: input.holdRemarks !== undefined ? input.holdRemarks : (input.hold_remarks !== undefined ? input.hold_remarks : (input.remarks !== undefined ? input.remarks : (nextStatus === 'ON_HOLD' ? input.holdRemarks || input.hold_remarks || input.remarks || null : existing.holdRemarks))),
+    resolution_summary: input.resolutionSummary !== undefined ? input.resolutionSummary : (input.resolution_summary !== undefined ? input.resolution_summary : (input.summary !== undefined ? input.summary : (nextStatus === 'RESOLVED' ? input.resolutionSummary || input.resolution_summary || input.summary || null : existing.resolutionSummary))),
+    closure_remarks: input.closureRemarks !== undefined ? input.closureRemarks : (input.closure_remarks !== undefined ? input.closure_remarks : (input.remarks !== undefined ? input.remarks : (input.feedback !== undefined ? input.feedback : (nextStatus === 'CLOSED' ? input.closureRemarks || input.closure_remarks || input.remarks || input.feedback || null : existing.closureRemarks)))),
   };
 
   if (updates.assigned_to && updates.status === 'OPEN') {
@@ -1128,7 +1689,16 @@ async function updateTicket(id, input, user) {
           closed_at = ?,
           reopened_count = COALESCE(?, reopened_count),
           last_activity_at = ?,
-          last_status_change_at = COALESCE(?, last_status_change_at)
+          last_status_change_at = COALESCE(?, last_status_change_at),
+          work_start_at = ?,
+          work_duration_seconds = ?,
+          hold_duration_seconds = ?,
+          resolution_duration_seconds = ?,
+          closure_duration_seconds = ?,
+          hold_reason = ?,
+          hold_remarks = ?,
+          resolution_summary = ?,
+          closure_remarks = ?
         WHERE id = ? AND tenant_id = ?
       `,
       [
@@ -1154,6 +1724,15 @@ async function updateTicket(id, input, user) {
         updates.reopened_count !== undefined ? updates.reopened_count : null,
         updates.last_activity_at,
         updates.last_status_change_at || null,
+        updates.work_start_at,
+        updates.work_duration_seconds,
+        updates.hold_duration_seconds,
+        updates.resolution_duration_seconds,
+        updates.closure_duration_seconds,
+        updates.hold_reason,
+        updates.hold_remarks,
+        updates.resolution_summary,
+        updates.closure_remarks,
         existing.id,
         tenantId,
       ]
@@ -1166,6 +1745,10 @@ async function updateTicket(id, input, user) {
       ['category_id', existing.categoryId, updates.category_id],
       ['subcategory_id', existing.subcategoryId, updates.subcategory_id],
       ['department', existing.department, updates.department],
+      ['hold_reason', existing.holdReason, updates.hold_reason],
+      ['hold_remarks', existing.holdRemarks, updates.hold_remarks],
+      ['resolution_summary', existing.resolutionSummary, updates.resolution_summary],
+      ['closure_remarks', existing.closureRemarks, updates.closure_remarks],
     ];
 
     for (const [fieldName, fromValue, toValue] of comparisons) {
@@ -1208,7 +1791,7 @@ async function updateTicket(id, input, user) {
 
   const eventType = existing.assigned_to !== hydrated.assigned_to
     ? (existing.assigned_to ? 'reassigned' : 'assigned')
-    : (hydrated.status === 'CLOSED' ? 'closed' : (hydrated.status === 'REOPENED' ? 'reopened' : 'updated'));
+    : (hydrated.status === 'CLOSED' ? 'closed' : (hydrated.status === 'REOPENED' ? 'reopened' : (hydrated.status === 'ON_HOLD' ? 'on_hold' : (hydrated.status === 'RESOLVED' ? 'resolved' : 'updated'))));
 
   await dispatchTicketNotifications(hydrated, eventType, {
     message: `${hydrated.ticketId} updated to ${hydrated.status}`,
@@ -1222,7 +1805,7 @@ async function addComment(ticketId, input, user) {
   const tenantId = user.tenant_id;
   const existingRow = await getTicketOrThrow(tenantId, ticketId);
   const ticket = mapTicketRow(existingRow);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const commentType = normalizeCommentType(input.commentType || input.comment_type, 'PUBLIC');
   const commentBody = String(input.body || input.comment || input.message || '').trim();
@@ -1316,7 +1899,7 @@ async function addComment(ticketId, input, user) {
 async function listComments(ticketId, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const [commentRows, attachmentRows] = await Promise.all([
     getComments(ticket.id),
@@ -1351,7 +1934,7 @@ async function updateComment(commentId, input, user) {
   if (!comment) throw new HttpError(404, 'Comment not found', 'COMMENT_NOT_FOUND');
 
   const ticket = mapTicketRow(await getTicketOrThrow(user.tenant_id, comment.ticket_id));
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const { permissions } = getPermissionContext(user);
   const isAuthor = Number(comment.author_user_id || 0) === Number(user._id);
@@ -1395,7 +1978,7 @@ async function deleteComment(commentId, user) {
   if (!comment) throw new HttpError(404, 'Comment not found', 'COMMENT_NOT_FOUND');
 
   const ticket = mapTicketRow(await getTicketOrThrow(user.tenant_id, comment.ticket_id));
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   await withTransaction(async (tx) => {
     await tx.query('DELETE FROM ticket_attachments WHERE comment_id = ?', [commentId]);
@@ -1417,7 +2000,7 @@ async function deleteComment(commentId, user) {
 async function listAttachments(ticketId, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
   const rows = await getAttachments(ticket.id);
   return rows.map(mapAttachmentRow);
 }
@@ -1425,7 +2008,7 @@ async function listAttachments(ticketId, user) {
 async function addAttachment(ticketId, input, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const attachments = Array.isArray(input.attachments) ? input.attachments : [];
   if (!attachments.length) {
@@ -1449,7 +2032,7 @@ async function addAttachment(ticketId, input, user) {
 async function deleteAttachment(ticketId, attachmentId, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const existing = await query(
     `SELECT id FROM ticket_attachments WHERE id = ? AND ticket_id = ? LIMIT 1`,
@@ -1474,7 +2057,7 @@ async function deleteAttachment(ticketId, attachmentId, user) {
 async function listWatchers(ticketId, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const rows = await query(
     `
@@ -1499,7 +2082,7 @@ async function listWatchers(ticketId, user) {
 async function addWatcher(ticketId, input, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const watcherInput = input.userId || input.user_id || input.watcherId || null;
   if (!watcherInput) throw new HttpError(400, 'userId is required', 'WATCHER_REQUIRED');
@@ -1523,7 +2106,7 @@ async function addWatcher(ticketId, input, user) {
 async function removeWatcher(ticketId, watcherId, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const watcher = await findUserByIdOrPublicId(user.tenant_id, watcherId);
   if (!watcher) throw new HttpError(404, 'Watcher not found', 'WATCHER_NOT_FOUND');
@@ -1539,7 +2122,7 @@ async function removeWatcher(ticketId, watcherId, user) {
 async function getTicketSla(ticketId, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   const policy = await getSlaPolicy(user.tenant_id, ticket.priority);
   return {
@@ -1556,7 +2139,7 @@ async function getTicketSla(ticketId, user) {
 async function updateTicketSla(ticketId, input, user) {
   const row = await getTicketOrThrow(user.tenant_id, ticketId);
   const ticket = mapTicketRow(row);
-  assertTicketAccess(ticket, user);
+  await assertTicketAccess(ticket, user);
 
   let policy = null;
   if (input.policyId) {

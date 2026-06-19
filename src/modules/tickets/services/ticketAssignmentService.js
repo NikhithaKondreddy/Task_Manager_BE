@@ -62,8 +62,12 @@ async function loadNotificationTicket(tenantId, ticketId) {
         t.requested_for_user_id,
         t.created_by_user_id,
         t.assigned_to,
+        assigned.public_id AS assigned_public_id,
+        assigned.name AS assigned_name,
+        assigned.email AS assigned_to_email,
         t.tenant_id
       FROM tickets t
+      LEFT JOIN users assigned ON assigned._id = t.assigned_to
       WHERE t.tenant_id = ? AND (t.ticket_id = ? OR CAST(t.id AS CHAR) = ?)
       LIMIT 1
     `,
@@ -268,15 +272,30 @@ async function acceptTicket(tenantId, ticketId, user) {
     throw new HttpError(403, 'Only the assigned engineer may accept this ticket', 'TICKET_ACCEPT_FORBIDDEN');
   }
 
+  // If ticket is assigned to a team (queue) and not yet assigned to a user,
+  // accepting should self-assign the accepting engineer to the ticket.
+  const willSelfAssign = (!ticket.assigned_to && ticket.assigned_team_id);
+
   await withTransaction(async (tx) => {
-    await tx.query(
-      `
-        UPDATE tickets
-        SET status = 'IN_PROGRESS', responded_at = COALESCE(responded_at, NOW()), last_activity_at = NOW(), last_status_change_at = NOW()
-        WHERE id = ? AND tenant_id = ?
-      `,
-      [ticket.id, tenantId]
-    );
+    if (willSelfAssign) {
+      await tx.query(
+        `
+          UPDATE tickets
+          SET assigned_to = ?, assignment_mode = 'SELF', assigned_at = COALESCE(assigned_at, NOW()), status = 'IN_PROGRESS', responded_at = COALESCE(responded_at, NOW()), work_start_at = COALESCE(work_start_at, NOW()), last_activity_at = NOW(), last_status_change_at = NOW()
+          WHERE id = ? AND tenant_id = ?
+        `,
+        [user?._id || null, ticket.id, tenantId]
+      );
+    } else {
+      await tx.query(
+        `
+          UPDATE tickets
+          SET status = 'IN_PROGRESS', responded_at = COALESCE(responded_at, NOW()), work_start_at = COALESCE(work_start_at, NOW()), last_activity_at = NOW(), last_status_change_at = NOW()
+          WHERE id = ? AND tenant_id = ?
+        `,
+        [ticket.id, tenantId]
+      );
+    }
 
     await tx.query(
       `
@@ -295,6 +314,27 @@ async function acceptTicket(tenantId, ticketId, user) {
       newValue: 'IN_PROGRESS',
       notes: 'Assignment accepted',
     });
+
+    // If we self-assigned on accept, record an assignment history entry as well
+    if (willSelfAssign) {
+      await writeHistory(tx.query, {
+        ticketId: ticket.id,
+        actorUserId: user?._id || null,
+        action: 'TICKET_ASSIGNED',
+        fieldName: 'assigned_to',
+        fromValue: null,
+        toValue: user?._id || null,
+        notes: 'Self assigned on acceptance',
+      });
+      await ticketActivityService.logActivity({
+        ticketId: ticket.id,
+        action: 'ASSIGNED',
+        oldValue: null,
+        newValue: user?._id || null,
+        performedBy: user?._id || null,
+        remarks: 'Self assigned on acceptance',
+      }, tx.query);
+    }
 
     await ticketActivityService.logActivity({
       ticketId: ticket.id,
@@ -317,12 +357,18 @@ async function acceptTicket(tenantId, ticketId, user) {
 
   const notifyTicket = await loadNotificationTicket(tenantId, ticketId);
   if (notifyTicket) {
+    // If self-assigned, also emit an assigned notification so UIs (kanban) can move the card
+    if (willSelfAssign) {
+      await dispatchTicketNotifications(notifyTicket, 'assigned', {
+        message: `TCK ${notifyTicket.ticket_id} assigned to ${notifyTicket.assigned_name || notifyTicket.assigned_public_id || notifyTicket.assigned_to}`,
+      }).catch(() => null);
+    }
     await dispatchTicketNotifications(notifyTicket, 'accepted', {
       message: `Assignment accepted for ${notifyTicket.ticket_id}`,
     }).catch(() => null);
   }
 
-  return { accepted: true };
+  return { accepted: true, ticket: notifyTicket };
 }
 
 async function rejectTicket(tenantId, ticketId, payload, user) {

@@ -18,26 +18,17 @@ connection.connect(err => {
         process.exit(1);
     }
     
-    const queries = [
-        'DESCRIBE admin_modules',
-        'SHOW CREATE TABLE admin_modules',
-        'SHOW CREATE TABLE users'
-    ];
+    const query = 'SELECT name, email, role, modules FROM users WHERE email = "manager@nivarahousing.com"';
     
-    let results = {};
-    
-    connection.query(queries.join(';'), (err, rows) => {
+    connection.query(query, (err, rows) => {
         if (err) {
-            console.error('Error executing queries:', err);
+            console.error('Error executing query:', err);
             connection.end();
             process.exit(1);
         }
         
-        results.describe_admin_modules = rows[0];
-        results.create_table_admin_modules = rows[1];
-        results.create_table_users = rows[2];
-        
-        console.log(JSON.stringify(results, null, 2));
+        console.log(JSON.stringify(rows, null, 2));
         connection.end();
     });
 });
+

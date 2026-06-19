@@ -35,6 +35,8 @@ async function listCategories(tenantId, filters = {}) {
   if (filters.status) {
     where.push('UPPER(c.status) = ?');
     params.push(String(filters.status).trim().toUpperCase());
+  } else if (String(filters.includeInactive || filters.include_inactive || 'false').toLowerCase() !== 'true') {
+    where.push("UPPER(COALESCE(c.status, 'ACTIVE')) <> 'INACTIVE'");
   }
 
   const rows = await query(
@@ -53,6 +55,7 @@ async function listCategories(tenantId, filters = {}) {
       LEFT JOIN subcategories s
         ON s.category_id = c.id
        AND s.tenant_id = c.tenant_id
+       AND UPPER(COALESCE(s.status, 'ACTIVE')) <> 'INACTIVE'
       WHERE ${where.join(' AND ')}
       ORDER BY c.category_name ASC, s.subcategory_name ASC
     `,
@@ -91,7 +94,7 @@ async function createCategory(tenantId, payload, user) {
 
   const duplicate = await query(
     `
-      SELECT id
+      SELECT id, status
       FROM categories
       WHERE tenant_id = ?
         AND (category_name = ? OR category_code = ?)
@@ -101,6 +104,17 @@ async function createCategory(tenantId, payload, user) {
   );
 
   if (duplicate.length) {
+    if (String(duplicate[0].status || '').toUpperCase() === 'INACTIVE') {
+      await query(
+        `
+          UPDATE categories
+          SET category_name = ?, category_code = ?, description = ?, status = ?, updated_by = ?
+          WHERE tenant_id = ? AND id = ?
+        `,
+        [categoryName, categoryCode, description, status, user?._id || null, tenantId, duplicate[0].id]
+      );
+      return getCategoryById(tenantId, duplicate[0].id);
+    }
     throw new HttpError(409, 'Category already exists', 'CATEGORY_EXISTS');
   }
 
@@ -193,7 +207,7 @@ async function updateCategory(tenantId, categoryId, payload, user) {
 
     if (subcategories) {
       const existingSubcategories = await tx.query(
-        `SELECT id FROM subcategories WHERE tenant_id = ? AND category_id = ?`,
+        `SELECT id FROM subcategories WHERE tenant_id = ? AND category_id = ? AND UPPER(COALESCE(status, 'ACTIVE')) <> 'INACTIVE'`,
         [tenantId, categoryId]
       );
       const existingIds = existingSubcategories.map((row) => Number(row.id));
@@ -216,8 +230,8 @@ async function updateCategory(tenantId, categoryId, payload, user) {
         }
 
         await tx.query(
-          `DELETE FROM subcategories WHERE tenant_id = ? AND category_id = ? AND id IN (?)`,
-          [tenantId, categoryId, removedIds]
+          `UPDATE subcategories SET status = 'INACTIVE', updated_by = ? WHERE tenant_id = ? AND category_id = ? AND id IN (?)`,
+          [user?._id || null, tenantId, categoryId, removedIds]
         );
       }
 
@@ -282,23 +296,16 @@ async function deleteCategory(tenantId, categoryId, user) {
     throw new HttpError(404, 'Category not found', 'CATEGORY_NOT_FOUND');
   }
 
-  const referenced = await query(
-    `
-      SELECT COUNT(*) AS count
-      FROM tickets
-      WHERE tenant_id = ?
-        AND (category_id = ? OR subcategory_id IN (
-          SELECT id FROM subcategories WHERE tenant_id = ? AND category_id = ?
-        ))
-    `,
-    [tenantId, categoryId, tenantId, categoryId]
-  );
-
-  if (Number(referenced[0]?.count || 0) > 0) {
-    throw new HttpError(409, 'Category is already in use by tickets', 'CATEGORY_IN_USE');
-  }
-
-  await query(`DELETE FROM categories WHERE tenant_id = ? AND id = ?`, [tenantId, categoryId]);
+  await withTransaction(async (tx) => {
+    await tx.query(
+      `UPDATE categories SET status = 'INACTIVE', updated_by = ? WHERE tenant_id = ? AND id = ?`,
+      [user?._id || null, tenantId, categoryId]
+    );
+    await tx.query(
+      `UPDATE subcategories SET status = 'INACTIVE', updated_by = ? WHERE tenant_id = ? AND category_id = ?`,
+      [user?._id || null, tenantId, categoryId]
+    );
+  });
 
   await auditLogger.logAudit({
     action: 'TICKET_CATEGORY_DELETED',
@@ -311,7 +318,7 @@ async function deleteCategory(tenantId, categoryId, user) {
     previous_value: existing,
   });
 
-  return { id: Number(categoryId), deleted: true };
+  return { id: Number(categoryId), deleted: true, softDeleted: true, status: 'INACTIVE' };
 }
 
 async function listSubcategories(tenantId, categoryId) {
@@ -320,6 +327,7 @@ async function listSubcategories(tenantId, categoryId) {
       SELECT id, category_id, subcategory_name, description, status
       FROM subcategories
       WHERE tenant_id = ? AND category_id = ?
+        AND UPPER(COALESCE(status, 'ACTIVE')) <> 'INACTIVE'
       ORDER BY subcategory_name ASC
     `,
     [tenantId, categoryId]
@@ -342,13 +350,27 @@ async function createSubcategory(tenantId, payload, user) {
   }
 
   const duplicate = await query(
-    `SELECT id FROM subcategories WHERE tenant_id = ? AND category_id = ? AND subcategory_name = ? LIMIT 1`,
+    `SELECT id, status FROM subcategories WHERE tenant_id = ? AND category_id = ? AND subcategory_name = ? LIMIT 1`,
     [tenantId, categoryId, name]
   );
-  if (duplicate.length) throw new HttpError(409, 'Subcategory already exists', 'SUBCATEGORY_EXISTS');
 
   const description = payload.description ? String(payload.description).trim() : null;
   const status = String(payload.status || 'ACTIVE').trim().toUpperCase();
+
+  if (duplicate.length) {
+    if (String(duplicate[0].status || '').toUpperCase() === 'INACTIVE') {
+      await query(
+        `
+          UPDATE subcategories
+          SET subcategory_name = ?, description = ?, status = ?, updated_by = ?
+          WHERE tenant_id = ? AND id = ?
+        `,
+        [name, description, status, user?._id || null, tenantId, duplicate[0].id]
+      );
+      return { id: duplicate[0].id, categoryId, name, description, status };
+    }
+    throw new HttpError(409, 'Subcategory already exists', 'SUBCATEGORY_EXISTS');
+  }
 
   const result = await query(
     `
@@ -387,8 +409,8 @@ async function updateSubcategory(tenantId, subcategoryId, payload, user) {
 }
 
 async function deleteSubcategory(tenantId, subcategoryId) {
-  await query('DELETE FROM subcategories WHERE tenant_id = ? AND id = ?', [tenantId, subcategoryId]);
-  return { id: Number(subcategoryId), deleted: true };
+  await query("UPDATE subcategories SET status = 'INACTIVE' WHERE tenant_id = ? AND id = ?", [tenantId, subcategoryId]);
+  return { id: Number(subcategoryId), deleted: true, softDeleted: true, status: 'INACTIVE' };
 }
 
 module.exports = {

@@ -427,7 +427,8 @@ async function ensureDefaultRoles() {
     { name: 'Manager', description: 'Manager with team oversight capabilities' },
     { name: 'Employee', description: 'Standard employee user' },
     { name: 'Client-Viewer', description: 'Client with view-only access' },
-    { name: 'IT Support', description: 'IT Support specialist' }
+    { name: 'IT Support', description: 'IT Support specialist' },
+    { name: 'IT Admin', description: 'IT administration role' }
   ];
 
   for (const role of defaultRoles) {
@@ -442,6 +443,81 @@ async function ensureDefaultRoles() {
     }
   }
   logger.debug('Migration: ensured default roles exist');
+}
+
+/**
+ * Clean up duplicate tenants if any exist due to lack of primary key constraint in old dump schema
+ */
+async function cleanDuplicateTenants() {
+  try {
+    const tableExistsRows = await executeQuery(
+      `SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES
+       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'tenants'`
+    );
+    if (!Array.isArray(tableExistsRows) || tableExistsRows.length === 0) {
+      return;
+    }
+
+    const dupRows = await executeQuery(
+      `SELECT COUNT(1) AS total_count, COUNT(DISTINCT id) AS distinct_count FROM tenants`
+    );
+    const total = dupRows && dupRows[0] && Number(dupRows[0].total_count || dupRows[0].total) || 0;
+    const distinct = dupRows && dupRows[0] && Number(dupRows[0].distinct_count || dupRows[0].distinct) || 0;
+    
+    if (total > distinct) {
+      logger.info(`Migration: cleaning up duplicate rows in tenants table (total=${total}, distinct=${distinct})...`);
+      
+      // Create a temporary table with the clean unique rows structure
+      await executeQuery(`CREATE TABLE IF NOT EXISTS tenants_clean (
+        id INT NOT NULL,
+        public_id VARCHAR(64) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        slug VARCHAR(255) NULL,
+        domain VARCHAR(255) NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      
+      // Copy distinct values
+      await executeQuery(`
+        INSERT INTO tenants_clean (id, public_id, name, slug, domain, is_active, created_at, updated_at)
+        SELECT id, public_id, name, slug, domain, is_active, MIN(created_at), MIN(updated_at)
+        FROM tenants
+        GROUP BY id, public_id, name, slug, domain, is_active
+      `);
+      
+      // Drop old table
+      await executeQuery(`DROP TABLE tenants`);
+      
+      // Re-create table with correct primary key and constraints
+      await executeQuery(`CREATE TABLE tenants (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        public_id VARCHAR(64) NOT NULL,
+        name VARCHAR(255) NOT NULL,
+        slug VARCHAR(255) NULL,
+        domain VARCHAR(255) NULL,
+        is_active TINYINT(1) NOT NULL DEFAULT 1,
+        created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        UNIQUE KEY uniq_tenants_public_id (public_id),
+        UNIQUE KEY uniq_tenants_slug (slug)
+      ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`);
+      
+      // Insert distinct values back to tenants
+      await executeQuery(`
+        INSERT IGNORE INTO tenants (id, public_id, name, slug, domain, is_active, created_at, updated_at)
+        SELECT id, public_id, name, slug, domain, is_active, created_at, updated_at
+        FROM tenants_clean
+      `);
+      
+      // Drop temp table
+      await executeQuery(`DROP TABLE tenants_clean`);
+      logger.info('Migration: tenants table cleaned up and constraints added successfully');
+    }
+  } catch (err) {
+    logger.warn(`Migration: failed to clean up duplicate tenants: ${err.message}`);
+  }
 }
 
 /**
@@ -461,7 +537,9 @@ async function migrateDatabase() {
     errors.push(...dumpResult.errors);
   }
 
-  // Execute base migrations in order for any tables not covered by the dump
+  // Clean duplicate tenants after import to prepare for AUTO_INCREMENT
+  await cleanDuplicateTenants();
+
   for (const tableName of MIGRATION_ORDER) {
     logger.debug(`Migration: processing table '${tableName}'...`);
     try {

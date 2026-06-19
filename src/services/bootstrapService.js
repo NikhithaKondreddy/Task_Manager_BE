@@ -369,6 +369,44 @@ async function ensureAutoIncrement() {
   }
 }
 
+async function syncBusinessRules() {
+  try {
+    await q(`
+      UPDATE business_rules
+      SET conditions = ?
+      WHERE rule_code = 'user_creation'
+    `, [JSON.stringify({ userRole: { $in: ['ADMIN', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] }, action: 'POST_CREATE' })]);
+
+    await q(`
+      UPDATE business_rules
+      SET conditions = ?
+      WHERE rule_code = 'user_update'
+    `, [JSON.stringify({ userRole: { $in: ['ADMIN', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] }, action: 'PUT_UPDATE_:ID' })]);
+
+    await q(`
+      UPDATE business_rules
+      SET conditions = ?
+      WHERE rule_code = 'user_delete'
+    `, [JSON.stringify({ userRole: { $in: ['ADMIN', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] }, action: 'DELETE_DELETE_:USER_ID' })]);
+
+    await q(`
+      UPDATE business_rules
+      SET conditions = ?
+      WHERE rule_code = 'user_list'
+    `, [JSON.stringify({ userRole: { $in: ['ADMIN', 'MANAGER', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] }, action: 'GET_GETUSERS' })]);
+
+    await q(`
+      UPDATE business_rules
+      SET conditions = ?
+      WHERE rule_code = 'user_view'
+    `, [JSON.stringify({ userRole: { $in: ['ADMIN', 'MANAGER', 'IT_ADMIN', 'IT ADMIN', 'CENTRAL_IT_ADMIN', 'CENTRAL IT ADMIN', 'SUPERADMIN', 'SUPER-ADMIN', 'SUPER_ADMIN'] }, action: 'GET_GETUSERBYID_:ID' })]);
+
+    logger.info('bootstrapService: synchronized user business rules in the database');
+  } catch (err) {
+    logger.warn('bootstrapService: failed to sync user business rules: ' + err.message);
+  }
+}
+
 let bootstrapPromise = null;
 let bootstrapRetryInterval = null;
 
@@ -400,6 +438,7 @@ async function retryBootstrapInBackground() {
       await seedUsers().catch(e =>
         logger.warn('bootstrapService: seedUsers failed: ' + e.message)
       );
+      await syncBusinessRules();
       logger.info('bootstrapService: multi-tenant bootstrap complete (retried)');
       clearInterval(bootstrapRetryInterval);
       bootstrapRetryInterval = null;
@@ -426,22 +465,33 @@ async function ensureBootstrap() {
         logger.warn('bootstrapService: migration service not available, skipping migration');
       }
 
+      logger.info('bootstrapService: ensuring core tables...');
       await ensureCoreTables();
+      logger.info('bootstrapService: ensuring auto increment...');
       await ensureAutoIncrement();
+      logger.info('bootstrapService: ensuring settings shape...');
       await ensureSettingsShape();
+      logger.info('bootstrapService: ensuring soft delete columns...');
       await ensureSoftDeleteColumns();
+      logger.info('bootstrapService: ensuring tenant columns...');
       await ensureTenantColumns();
+      logger.info('bootstrapService: ensuring audit log shape...');
       await ensureAuditLogShape();
       if (ensureTicketingSchema) {
+        logger.info('bootstrapService: ensuring ticketing schema...');
         await ensureTicketingSchema();
       }
 
+      logger.info('bootstrapService: ensuring tenant public ID...');
       await ensureTenantPublicId(1).catch(e =>
         logger.warn('bootstrapService: could not upgrade tenant public_id: ' + e.message)
       );
+      logger.info('bootstrapService: seeding users...');
       await seedUsers().catch(e =>
         logger.warn('bootstrapService: seedUsers failed: ' + e.message)
       );
+      logger.info('bootstrapService: syncing business rules...');
+      await syncBusinessRules();
       logger.info('bootstrapService: multi-tenant bootstrap complete');
       return { success: true };
     } catch (error) {

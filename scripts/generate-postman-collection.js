@@ -11,7 +11,18 @@ function read(file) {
 
 function ensureJs(p) {
   if (!p) return null;
-  if (fs.existsSync(p)) return p;
+  if (fs.existsSync(p)) {
+    try {
+      const stat = fs.statSync(p);
+      if (stat.isFile()) return p;
+      if (stat.isDirectory()) {
+        const idx = path.join(p, 'index.js');
+        if (fs.existsSync(idx)) return idx;
+      }
+    } catch (e) {
+      return p;
+    }
+  }
   if (fs.existsSync(p + '.js')) return p + '.js';
   if (fs.existsSync(path.join(p, 'index.js'))) return path.join(p, 'index.js');
   return null;
@@ -223,11 +234,12 @@ function buildCollection(mappings) {
     let routeFile = handler.file;
     if (!routeFile) return;
 
-    // If handler.member provided and the module file exports a property that requires another file, resolve
-    if (handler.member && fs.existsSync(routeFile)) {
+    // If handler.member provided (or if it's destructured, handler.raw) and the module file exports a property that requires another file, resolve
+    const memberName = handler.member || handler.raw;
+    if (memberName && fs.existsSync(routeFile)) {
       const text = read(routeFile);
       // look for pattern: member: require('./routes/xyz')
-      const m = text.match(new RegExp(handler.member + '\\s*:\\s*require\\(([^)]+)\\)')) || text.match(new RegExp(handler.member + '\\s*:\\s*([A-Za-z0-9_]+)'));
+      const m = text.match(new RegExp(memberName + '\\s*:\\s*require\\(([^)]+)\\)')) || text.match(new RegExp(memberName + '\\s*:\\s*([A-Za-z0-9_]+)'));
       if (m && m[1]) {
         const resolved = resolveRequirePath(m[1], path.dirname(routeFile));
         if (resolved) routeFile = resolved;

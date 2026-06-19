@@ -1,4 +1,5 @@
 require('dotenv').config();
+console.log("--- NODE SERVER RESTARTING FOR DEFAULTS SEEDING ---");
 const Redis = require('ioredis');
 const appServer = require('./src/app');
 const env = require('./src/config/env');
@@ -62,4 +63,4 @@ async function start() {
 }
 
 start(); // server start
-  
+// Trigger nodemon restart to rerun database seeding after stable DB connection

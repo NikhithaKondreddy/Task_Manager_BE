@@ -19,20 +19,20 @@ function q(sql, params = [], connection = db) {
 
 // Admin module path map
 const ADMIN_MODULE_PATH_MAP = {
-  'Dashboard':                          '/admin/dashboard',
-  'User Management':                    '/admin/users',
-  'Clients':                            '/admin/clients',
-  'Departments':                        '/admin/departments',
-  'Tasks':                              '/admin/tasks',
-  'Projects':                           '/admin/projects',
-  'Workflow (Project & Task Flow)':     '/admin/workflow',
-  'Notifications':                      '/admin/notifications',
-  'Reports & Analytics':                '/admin/reports',
-  'Document & File Management':         '/admin/document-file-management',
-  'Chat / Real-Time Collaboration':     '/admin/chat',
-  'Settings & Master Configuration':    '/admin/settings',
-  'Audit Logs':                         '/admin/audit-logs',
-  'Sending Approval':                   '/admin/sending-approval',
+  'Dashboard': '/admin/dashboard',
+  'User Management': '/admin/users',
+  'Clients': '/admin/clients',
+  'Departments': '/admin/departments',
+  'Tasks': '/admin/tasks',
+  'Projects': '/admin/projects',
+  'Workflow (Project & Task Flow)': '/admin/workflow',
+  'Notifications': '/admin/notifications',
+  'Reports & Analytics': '/admin/reports',
+  'Document & File Management': '/admin/document-file-management',
+  'Chat / Real-Time Collaboration': '/admin/chat',
+  'Settings & Master Configuration': '/admin/settings',
+  'Audit Logs': '/admin/audit-logs',
+  'Sending Approval': '/admin/sending-approval',
 };
 
 function pathForModule(name) {
@@ -231,11 +231,11 @@ async function createAdmin(req, res) {
 
     let adminInternalId;
     if (insertResult && insertResult.insertId) {
-       adminInternalId = insertResult.insertId;
+      adminInternalId = insertResult.insertId;
     } else {
-       const selectAdmin = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [adminPublicId], connection);
-       if (!selectAdmin || selectAdmin.length === 0) throw new Error('Failed to create admin user record');
-       adminInternalId = selectAdmin[0]._id;
+      const selectAdmin = await q('SELECT _id FROM users WHERE public_id = ? LIMIT 1', [adminPublicId], connection);
+      if (!selectAdmin || selectAdmin.length === 0) throw new Error('Failed to create admin user record');
+      adminInternalId = selectAdmin[0]._id;
     }
 
     // ── Store modules ────────────────────────────────────────────────────
@@ -473,9 +473,9 @@ async function listAdmins(req, res) {
     const countRows = await q(`SELECT COUNT(*) AS total FROM users WHERE ${countWhere}`, countParams);
     const total = (countRows && countRows[0] && countRows[0].total) || 0;
 
-    return res.json({ 
-      success: true, 
-      data: formattedAdmins, 
+    return res.json({
+      success: true,
+      data: formattedAdmins,
       pagination: {
         total,
         page,
@@ -884,9 +884,33 @@ async function updateSettings(req, res) {
   }
 }
 
+async function sendITAdminWelcomeEmail(itAdminName, itAdminEmail, plainPassword) {
+  if (!emailService || !emailService.sendEmail) return;
+  const loginUrl = getLoginUrl();
+
+  const tpl = emailService.welcomeTemplate({
+    name: itAdminName,
+    email: itAdminEmail,
+    role: 'IT Admin',
+    title: 'IT Admin',
+    tempPassword: plainPassword,
+    createdBy: 'Super Admin',
+    createdAt: new Date(),
+    setupLink: loginUrl,
+    userId: itAdminEmail
+  });
+
+  await emailService.sendEmail({
+    to: itAdminEmail,
+    subject: 'Welcome to Nivara TASK – Your IT Admin Account Details',
+    html: tpl.html,
+    text: tpl.text
+  });
+}
+
 /**
  * POST /api/super-admin/it-support-users
- * Create a new IT Support user (Super Admin only)
+ * Create a new IT Admin user (Super Admin only)
  */
 async function createITSupportUser(req, res) {
   try {
@@ -932,13 +956,13 @@ async function createITSupportUser(req, res) {
       return res.status(400).json({ success: false, error: 'Superadmin must have a tenant_id' });
     }
 
-    // Create IT Support user
+    // Create IT Admin user
     const publicId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
     const createdBy = req.user._id || req.user.id;
 
     const insertResult = await q(
-      'INSERT INTO users (public_id, name, title, email, password, role, tenant_id, isActive, is_active, createdAt, updatedAt, created_by) VALUES (?, ?, ?, ?, ?, \'IT Support\', ?, 1, 1, NOW(), NOW(), ?)',
-      [publicId, name, title || 'IT Support', email.toLowerCase(), hashedPassword, tenantIdNum, createdBy]
+      'INSERT INTO users (public_id, name, title, email, password, role, tenant_id, isActive, is_active, createdAt, updatedAt, created_by) VALUES (?, ?, ?, ?, ?, \'IT Admin\', ?, 1, 1, NOW(), NOW(), ?)',
+      [publicId, name, title || 'IT Admin', email.toLowerCase(), hashedPassword, tenantIdNum, createdBy]
     );
 
     // Audit log
@@ -950,26 +974,26 @@ async function createITSupportUser(req, res) {
         action: 'CREATE',
         entity: 'User',
         entity_id: publicId,
-        details: { email: email.toLowerCase(), role: 'ITSupport', createdBy: createdBy }
+        details: { email: email.toLowerCase(), role: 'ITAdmin', createdBy: createdBy }
       });
     } catch (e) {
-      logger.warn('Failed to log IT Support user creation audit:', e.message);
+      logger.warn('Failed to log IT Admin user creation audit:', e.message);
     }
 
     // Send welcome email with temporary password (non-blocking)
-    sendITSupportWelcomeEmail(name, email.toLowerCase(), tempPassword)
-      .then(() => logger.info(`Welcome email sent to IT Support user ${email}`))
+    sendITAdminWelcomeEmail(name, email.toLowerCase(), tempPassword)
+      .then(() => logger.info(`Welcome email sent to IT Admin user ${email}`))
       .catch(e => logger.warn('Welcome email failed (non-fatal):', e && e.message));
 
     return res.status(201).json({
       success: true,
-      message: 'IT Support user created successfully',
+      message: 'IT Admin user created successfully',
       data: {
         userId: publicId,
         name,
         email: email.toLowerCase(),
-        role: 'ITSupport',
-        title: title || 'IT Support'
+        role: 'ITAdmin',
+        title: title || 'IT Admin'
       }
     });
 
@@ -994,7 +1018,7 @@ async function listITSupportUsers(req, res) {
     const offset = (page - 1) * limit;
     const search = req.query.search ? String(req.query.search).trim() : '';
 
-    let where = "role = 'IT Support'";
+    let where = "role = 'IT Admin'";
     const params = [];
 
     // Enforce tenant isolation: only show IT Support users from the same tenant
@@ -1025,8 +1049,21 @@ async function listITSupportUsers(req, res) {
       params
     );
 
+    const formattedRows = rows.map(r => ({
+      public_id: r.public_id,
+      id: r.public_id,
+      userId: r.public_id,
+      name: r.name,
+      title: r.title,
+      email: r.email,
+      role: 'ITAdmin',
+      isActive: r.isActive,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt
+    }));
+
     const countParams = [];
-    let countWhere = "role = 'IT Support'";
+    let countWhere = "role = 'IT Admin'";
     if (tenantIdNum !== undefined) {
       countWhere += " AND tenant_id = ?";
       countParams.push(tenantIdNum);
@@ -1037,7 +1074,7 @@ async function listITSupportUsers(req, res) {
 
     return res.json({
       success: true,
-      data: rows,
+      data: formattedRows,
       pagination: { total, page, limit, totalPages: Math.ceil(total / limit) }
     });
   } catch (err) {
@@ -1074,9 +1111,9 @@ async function getITSupportUser(req, res) {
       return res.status(400).json({ success: false, error: 'Superadmin must have a tenant_id' });
     }
 
-    // Find the IT Support user
+    // Find the IT Support user (now IT Admin)
     const userRows = await q(
-      `SELECT public_id, name, title, email, isActive, createdAt, updatedAt FROM users WHERE (public_id = ? OR _id = ?) AND role = 'IT Support' AND tenant_id = ? LIMIT 1`,
+      `SELECT public_id, name, title, email, isActive, createdAt, updatedAt FROM users WHERE (public_id = ? OR _id = ?) AND role = 'IT Admin' AND tenant_id = ? LIMIT 1`,
       [id, id, tenantIdNum]
     );
 
@@ -1091,9 +1128,12 @@ async function getITSupportUser(req, res) {
       message: 'IT Support user fetched successfully',
       data: {
         id: user.public_id,
+        public_id: user.public_id,
+        userId: user.public_id,
         name: user.name,
         title: user.title,
         email: user.email,
+        role: 'ITAdmin',
         status: user.isActive ? 'Active' : 'Inactive',
         createdAt: user.createdAt,
         updatedAt: user.updatedAt
@@ -1135,9 +1175,9 @@ async function updateITSupportUser(req, res) {
       return res.status(400).json({ success: false, error: 'Superadmin must have a tenant_id' });
     }
 
-    // Find the IT Support user
+    // Find the IT Support user (now IT Admin)
     const userRows = await q(
-      `SELECT _id, email FROM users WHERE (public_id = ? OR _id = ?) AND role = 'IT Support' AND tenant_id = ? LIMIT 1`,
+      `SELECT _id, email FROM users WHERE (public_id = ? OR _id = ?) AND role = 'IT Admin' AND tenant_id = ? LIMIT 1`,
       [id, id, tenantIdNum]
     );
 
@@ -1192,10 +1232,10 @@ async function updateITSupportUser(req, res) {
         action: 'UPDATE',
         entity: 'User',
         entity_id: id,
-        details: { email: email || currentEmail, role: 'ITSupport', updatedBy: req.user._id || req.user.id }
+        details: { email: email || currentEmail, role: 'ITAdmin', updatedBy: req.user._id || req.user.id }
       });
     } catch (e) {
-      logger.warn('Failed to log IT Support user update audit:', e.message);
+      logger.warn('Failed to log IT Admin user update audit:', e.message);
     }
 
     return res.json({
@@ -1237,9 +1277,9 @@ async function deleteITSupportUser(req, res) {
       return res.status(400).json({ success: false, error: 'Superadmin must have a tenant_id' });
     }
 
-    // Find the IT Support user
+    // Find the IT Support user (now IT Admin)
     const userRows = await q(
-      `SELECT _id, email FROM users WHERE (public_id = ? OR _id = ?) AND role = 'IT Support' AND tenant_id = ? LIMIT 1`,
+      `SELECT _id, email FROM users WHERE (public_id = ? OR _id = ?) AND role = 'IT Admin' AND tenant_id = ? LIMIT 1`,
       [id, id, tenantIdNum]
     );
 
@@ -1263,10 +1303,10 @@ async function deleteITSupportUser(req, res) {
         action: 'DELETE',
         entity: 'User',
         entity_id: id,
-        details: { email, role: 'ITSupport', deletedBy: req.user._id || req.user.id }
+        details: { email, role: 'ITAdmin', deletedBy: req.user._id || req.user.id }
       });
     } catch (e) {
-      logger.warn('Failed to log IT Support user deletion audit:', e.message);
+      logger.warn('Failed to log IT Admin user deletion audit:', e.message);
     }
 
     return res.json({
@@ -1280,6 +1320,93 @@ async function deleteITSupportUser(req, res) {
   }
 }
 
+async function createTenant(req, res) {
+  try {
+    const { name, slug, domain, is_active } = req.body;
+    if (!name || !slug) {
+      return res.status(400).json({ success: false, error: 'Tenant name and slug are required' });
+    }
+    const publicId = crypto.randomUUID ? crypto.randomUUID() : crypto.randomBytes(16).toString('hex');
+    const isActive = is_active === undefined ? 1 : Number(Boolean(is_active));
+
+    const maxTenantResult = await q('SELECT MAX(id) as maxId FROM tenants', []);
+    const nextTenantId = (maxTenantResult && maxTenantResult[0] && maxTenantResult[0].maxId) ? maxTenantResult[0].maxId + 1 : 2;
+
+    await q(
+      'INSERT INTO tenants (id, public_id, name, slug, domain, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, NOW(), NOW())',
+      [nextTenantId, publicId, name, slug, domain || `${slug}.nivarahousing.com`, isActive]
+    );
+
+    return res.status(201).json({
+      success: true,
+      message: 'Tenant created successfully',
+      data: { id: nextTenantId, public_id: publicId, name, slug, domain, is_active: isActive }
+    });
+  } catch (err) {
+    logger.error('superAdminController.createTenant error:', err && err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error', details: err.message });
+  }
+}
+
+async function getTenant(req, res) {
+  try {
+    const { id } = req.params;
+    const rows = await q('SELECT id, public_id, name, slug, is_active, created_at, domain FROM tenants WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Tenant not found' });
+    }
+    return res.json({ success: true, data: rows[0] });
+  } catch (err) {
+    logger.error('superAdminController.getTenant error:', err && err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error' });
+  }
+}
+
+async function updateTenant(req, res) {
+  try {
+    const { id } = req.params;
+    const { name, slug, domain, is_active } = req.body;
+
+    const rows = await q('SELECT id FROM tenants WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Tenant not found' });
+    }
+    const tenantId = rows[0].id;
+
+    const updates = [];
+    const params = [];
+    if (name) { updates.push('name = ?'); params.push(name); }
+    if (slug) { updates.push('slug = ?'); params.push(slug); }
+    if (domain) { updates.push('domain = ?'); params.push(domain); }
+    if (is_active !== undefined) { updates.push('is_active = ?'); params.push(Number(Boolean(is_active))); }
+    updates.push('updated_at = NOW()');
+    params.push(tenantId);
+
+    await q(`UPDATE tenants SET ${updates.join(', ')} WHERE id = ?`, params);
+    return res.json({ success: true, message: 'Tenant updated successfully' });
+  } catch (err) {
+    logger.error('superAdminController.updateTenant error:', err && err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error', details: err.message });
+  }
+}
+
+async function deleteTenant(req, res) {
+  try {
+    const { id } = req.params;
+    const rows = await q('SELECT id FROM tenants WHERE id = ? OR public_id = ? LIMIT 1', [id, id]);
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Tenant not found' });
+    }
+    const tenantId = rows[0].id;
+
+    await q('DELETE FROM tenants WHERE id = ?', [tenantId]);
+    return res.json({ success: true, message: 'Tenant deleted permanently' });
+  } catch (err) {
+    logger.error('superAdminController.deleteTenant error:', err && err.message);
+    return res.status(500).json({ success: false, error: 'Internal server error', details: err.message });
+  }
+}
+
 module.exports = {
   createAdmin,
   listAdmins,
@@ -1290,6 +1417,10 @@ module.exports = {
   updateAdminModules,
   getDashboard,
   listTenants,
+  getTenant,
+  createTenant,
+  updateTenant,
+  deleteTenant,
   getSettings,
   updateSettings,
   createITSupportUser,

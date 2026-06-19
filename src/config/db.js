@@ -42,6 +42,71 @@ pool.getConnection((err, connection) => {
         logger.warn('Initial DB connection failed; continuing — will retry on first query.');
     }
     if (connection) {
+        const cleanupTenants = (callback) => {
+            connection.query("SHOW TABLES LIKE 'tenants'", (showErr, showRows) => {
+                if (showErr || !showRows || showRows.length === 0) {
+                    return callback();
+                }
+                connection.query("SELECT COUNT(1) AS total, COUNT(DISTINCT id) AS distinct_ids FROM tenants", (err, rows) => {
+                    if (err || !rows || !rows[0] || rows[0].total <= rows[0].distinct_ids) {
+                        return callback();
+                    }
+                    logger.info(`DB: Duplicates found in tenants table (${rows[0].total} total, ${rows[0].distinct_ids} distinct). Running cleanup...`);
+                    connection.query("SET FOREIGN_KEY_CHECKS = 0", () => {
+                        connection.query(`CREATE TABLE IF NOT EXISTS tenants_clean (
+                          id INT NOT NULL,
+                          public_id VARCHAR(64) NOT NULL,
+                          name VARCHAR(255) NOT NULL,
+                          slug VARCHAR(255) NULL,
+                          domain VARCHAR(255) NULL,
+                          is_active TINYINT(1) NOT NULL DEFAULT 1,
+                          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+                        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, () => {
+                            connection.query(`INSERT INTO tenants_clean (id, public_id, name, slug, domain, is_active, created_at, updated_at)
+                              SELECT id, public_id, name, slug, domain, is_active, MIN(created_at), MIN(updated_at)
+                              FROM tenants
+                              GROUP BY id, public_id, name, slug, domain, is_active`, () => {
+                                connection.query("DROP TABLE tenants", () => {
+                                    connection.query(`CREATE TABLE tenants (
+                                      id INT AUTO_INCREMENT PRIMARY KEY,
+                                      public_id VARCHAR(64) NOT NULL,
+                                      name VARCHAR(255) NOT NULL,
+                                      slug VARCHAR(255) NULL,
+                                      domain VARCHAR(255) NULL,
+                                      is_active TINYINT(1) NOT NULL DEFAULT 1,
+                                      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                                      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                                      UNIQUE KEY uniq_tenants_public_id (public_id),
+                                      UNIQUE KEY uniq_tenants_slug (slug)
+                                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4`, () => {
+                                        connection.query(`INSERT INTO tenants (id, public_id, name, slug, domain, is_active, created_at, updated_at)
+                                          SELECT id, public_id, name, slug, domain, is_active, created_at, updated_at
+                                          FROM tenants_clean`, () => {
+                                            connection.query("DROP TABLE tenants_clean", () => {
+                                                connection.query("TRUNCATE TABLE branches", () => {
+                                                    connection.query("TRUNCATE TABLE clusters", () => {
+                                                        connection.query("TRUNCATE TABLE regions", () => {
+                                                            connection.query("TRUNCATE TABLE states", () => {
+                                                                connection.query("SET FOREIGN_KEY_CHECKS = 1", () => {
+                                                                    logger.info("DB: Tenants and locations tables cleaned up successfully!");
+                                                                    callback();
+                                                                });
+                                                            });
+                                                        });
+                                                    });
+                                                });
+                                            });
+                                        });
+                                    });
+                                });
+                            });
+                        });
+                    });
+                });
+            });
+        };
+
         // Ensure platform_settings table exists
         connection.query(`
             CREATE TABLE IF NOT EXISTS platform_settings (
@@ -52,7 +117,9 @@ pool.getConnection((err, connection) => {
             );
         `, (tableErr) => {
             if (tableErr) logger.error('Error creating platform_settings table: ' + tableErr.message);
-            connection.release();
+            cleanupTenants(() => {
+                connection.release();
+            });
         });
     }
 });
