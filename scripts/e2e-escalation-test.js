@@ -31,6 +31,9 @@ const { query } = require('../src/modules/tickets/repositories/mysql');
     }
 
     const result = await ticketService.createTicket(input, actorUser);
+    if (result && result.duplicate) {
+      throw new Error('Duplicate ticket detected for actor during e2e-escalation-test: ' + JSON.stringify(result.duplicateMeta));
+    }
     if (!result || !result.ticket) {
       throw new Error('Ticket creation failed or returned unexpected result');
     }

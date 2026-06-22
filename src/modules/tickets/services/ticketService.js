@@ -807,34 +807,54 @@ async function createTicket(input, user) {
     null;
   const resolvedSubcategoryId = validatedCategorySelection?.subcategory?.id || rawSubcategoryId || null;
 
-  // Duplicate ticket validation
-  let duplicateCheck = [];
-  // Duplicate detection should be category-aware only. If category is not resolved,
-  // do not force a synthetic category (like 0), which can cause false positives.
+  // Duplicate ticket validation (scoped to the authenticated actor)
+  // Duplicate detection is category-aware and can be constrained by a configured
+  // time-window via the DUPLICATE_TICKET_TTL_MINUTES env var (0 = disabled).
+  let duplicateMeta = null;
   if (resolvedCategoryId) {
-    duplicateCheck = await query(
-      `SELECT id, ticket_id, title, status, category_id, subcategory_id FROM tickets 
-       WHERE tenant_id = ? 
-         AND requester_user_id = ? 
-         AND category_id = ? 
-         AND status IN ('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'REOPENED')
-       LIMIT 1`,
-      [tenantId, requestedForUser._id, resolvedCategoryId]
-    );
-  }
+    const ttlMinutes = Number(process.env.DUPLICATE_TICKET_TTL_MINUTES || 0);
+    // Build dynamic query depending on whether TTL is configured
+    let duplicateQuery = `
+      SELECT id, ticket_id, title, status, category_id, subcategory_id, requester_user_id, requested_for_user_id, created_by_user_id, created_at
+      FROM tickets
+      WHERE tenant_id = ?
+        AND created_by_user_id = ?
+        AND category_id = ?
+        AND UPPER(status) IN ('OPEN', 'ASSIGNED', 'IN_PROGRESS', 'PENDING_USER', 'REOPENED')
+    `;
+    const dupParams = [tenantId, user._id, resolvedCategoryId];
+    if (ttlMinutes > 0) {
+      duplicateQuery += ' AND created_at >= DATE_SUB(NOW(), INTERVAL ? MINUTE)';
+      dupParams.push(ttlMinutes);
+    }
+    duplicateQuery += ' LIMIT 1';
 
-  if (duplicateCheck && duplicateCheck.length > 0) {
-    if (!input.overrideReason && !input.override_reason) {
-      throw new HttpError(409, 'Duplicate ticket detected', 'DUPLICATE_TICKET_DETECTED', {
-        existingTicketId: duplicateCheck[0].ticket_id,
-        existingTicketTitle: duplicateCheck[0].title,
-        existingTicketStatus: duplicateCheck[0].status,
-        duplicateCategoryId: duplicateCheck[0].category_id,
-        duplicateSubcategoryId: duplicateCheck[0].subcategory_id,
+    const rows = await query(duplicateQuery, dupParams);
+    if (rows && rows.length > 0) {
+      const d = rows[0];
+      duplicateMeta = {
+        existingTicketId: d.ticket_id,
+        existingTicketTitle: d.title,
+        existingTicketStatus: d.status,
+        duplicateCategoryId: d.category_id,
+        duplicateSubcategoryId: d.subcategory_id,
         requestedCategoryId: resolvedCategoryId,
         requestedSubcategoryId: resolvedSubcategoryId,
-      });
+        matchedRequesterId: d.requester_user_id,
+        matchedRequestedForId: d.requested_for_user_id,
+        matchedCreatedById: d.created_by_user_id,
+        existingCreatedAt: d.created_at,
+      };
     }
+  }
+
+  // If duplicate found and no override provided, return duplicate metadata
+  // instead of throwing so frontend can show a friendly duplicate UI.
+  if (duplicateMeta && !input.overrideReason && !input.override_reason) {
+    return {
+      duplicate: true,
+      duplicateMeta,
+    };
   }
 
   // Reopen workflow validation

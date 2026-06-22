@@ -28,12 +28,20 @@ const ticketAssignmentService = require('../src/modules/tickets/services/ticketA
     // Create a ticket for view tests
     const inputView = { subject: `E2E RBAC View Ticket ${Date.now()}`, description: 'RBAC view test ticket', priority: 'P3', requester_email: actorUser.email };
     const createdView = await ticketService.createTicket(inputView, actorUser);
+    if (createdView && createdView.duplicate) {
+      report.errors.push({ step: 'ticket_view_duplicate', meta: createdView.duplicateMeta });
+      throw new Error('Duplicate ticket detected for actor during e2e-rbac');
+    }
     const ticketView = createdView.ticket;
     report.summary.push({ step: 'ticket_view_created', ticketId: ticketView.ticketId, id: ticketView.id });
 
     // Create a ticket for update tests (will be assigned)
     const inputUpd = { subject: `E2E RBAC Update Ticket ${Date.now()}`, description: 'RBAC update test ticket', priority: 'P3', requester_email: actorUser.email };
     const createdUpd = await ticketService.createTicket(inputUpd, actorUser);
+    if (createdUpd && createdUpd.duplicate) {
+      report.errors.push({ step: 'ticket_update_duplicate', meta: createdUpd.duplicateMeta });
+      throw new Error('Duplicate ticket detected for actor during e2e-rbac');
+    }
     const ticketUpd = createdUpd.ticket;
     report.summary.push({ step: 'ticket_update_created', ticketId: ticketUpd.ticketId, id: ticketUpd.id });
 
