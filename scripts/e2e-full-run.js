@@ -34,6 +34,9 @@ const ticketAssignmentService = require('../src/modules/tickets/services/ticketA
       requester_email: actorUser.email,
     };
     const created = await ticketService.createTicket(input, actorUser);
+    if (created && created.duplicate) {
+      throw new Error('Duplicate ticket detected for actor during e2e-full-run: ' + JSON.stringify(created.duplicateMeta));
+    }
     if (!created || !created.ticket) throw new Error('Ticket creation failed');
     const ticket = created.ticket;
     report.steps.push({ step: 'create-ticket', ok: true, ticketId: ticket.ticketId, internalId: ticket.id });

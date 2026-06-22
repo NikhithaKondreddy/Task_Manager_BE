@@ -285,22 +285,165 @@ router.get('/teams/:id/queue', requireAuth, requireRole(['Admin', 'Manager', 'IT
 });
 
 router.get('/location-hierarchy', requireAuth, async (req, res) => {
-  const data = await locationService.getHierarchy(req.user.tenant_id);
+  const data = await locationService.getHierarchy(req.user.tenant_id, req.user);
   res.json({ success: true, data });
 });
 
+router.post('/location-hierarchy', requireAuth, async (req, res) => {
+  const role = req.user.normalized_role;
+  if (role !== 'IT_ADMIN' && role !== 'SUPER_ADMIN') {
+    return res.status(403).json({ success: false, message: 'Forbidden' });
+  }
+
+  const { stateName, regionName, clusterName, branchName, status } = req.body;
+  const tenantId = req.user.tenant_id;
+  const userId = req.user._id;
+
+  if (!stateName || !regionName || !clusterName || !branchName) {
+    return res.status(400).json({ success: false, message: 'All location hierarchy fields are required' });
+  }
+
+  try {
+    // 1. Find or Create State
+    let states = await q('SELECT id FROM states WHERE tenant_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, stateName.trim().toUpperCase()]);
+    let stateId;
+    if (states.length > 0) {
+      stateId = states[0].id;
+      await q("UPDATE states SET status = 'ACTIVE' WHERE id = ?", [stateId]);
+    } else {
+      const result = await q('INSERT INTO states (tenant_id, name, status, created_by) VALUES (?, ?, ?, ?)', [tenantId, stateName.trim(), 'ACTIVE', userId]);
+      stateId = result.insertId;
+    }
+
+    // 2. Find or Create Region
+    let regions = await q('SELECT id FROM regions WHERE tenant_id = ? AND state_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, stateId, regionName.trim().toUpperCase()]);
+    let regionId;
+    if (regions.length > 0) {
+      regionId = regions[0].id;
+      await q("UPDATE regions SET status = 'ACTIVE' WHERE id = ?", [regionId]);
+    } else {
+      const result = await q('INSERT INTO regions (tenant_id, state_id, name, status, created_by) VALUES (?, ?, ?, ?, ?)', [tenantId, stateId, regionName.trim(), 'ACTIVE', userId]);
+      regionId = result.insertId;
+    }
+
+    // 3. Find or Create Cluster
+    let clusters = await q('SELECT id FROM clusters WHERE tenant_id = ? AND region_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, regionId, clusterName.trim().toUpperCase()]);
+    let clusterId;
+    if (clusters.length > 0) {
+      clusterId = clusters[0].id;
+      await q("UPDATE clusters SET status = 'ACTIVE' WHERE id = ?", [clusterId]);
+    } else {
+      const result = await q('INSERT INTO clusters (tenant_id, region_id, name, status, created_by) VALUES (?, ?, ?, ?, ?)', [tenantId, regionId, clusterName.trim(), 'ACTIVE', userId]);
+      clusterId = result.insertId;
+    }
+
+    // 4. Find or Create Branch
+    let branches = await q('SELECT id FROM branches WHERE tenant_id = ? AND cluster_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, clusterId, branchName.trim().toUpperCase()]);
+    let branchId;
+    if (branches.length > 0) {
+      branchId = branches[0].id;
+      await q('UPDATE branches SET status = ? WHERE id = ?', [status || 'ACTIVE', branchId]);
+    } else {
+      const result = await q('INSERT INTO branches (tenant_id, cluster_id, name, status, created_by) VALUES (?, ?, ?, ?, ?)', [tenantId, clusterId, branchName.trim(), status || 'ACTIVE', userId]);
+      branchId = result.insertId;
+    }
+
+    res.json({ success: true, data: { stateId, regionId, clusterId, branchId } });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.put('/location-hierarchy/:id', requireAuth, async (req, res) => {
+  const role = req.user.normalized_role;
+  if (role !== 'IT_ADMIN' && role !== 'SUPER_ADMIN') {
+    return res.status(403).json({ success: false, message: 'Forbidden' });
+  }
+
+  const { stateName, regionName, clusterName, branchName, status } = req.body;
+  const tenantId = req.user.tenant_id;
+  const userId = req.user._id;
+  const branchId = req.params.id;
+
+  if (!stateName || !regionName || !clusterName || !branchName) {
+    return res.status(400).json({ success: false, message: 'All location hierarchy fields are required' });
+  }
+
+  try {
+    // 1. Find or Create State
+    let states = await q('SELECT id FROM states WHERE tenant_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, stateName.trim().toUpperCase()]);
+    let stateId;
+    if (states.length > 0) {
+      stateId = states[0].id;
+      await q("UPDATE states SET status = 'ACTIVE' WHERE id = ?", [stateId]);
+    } else {
+      const result = await q('INSERT INTO states (tenant_id, name, status, created_by) VALUES (?, ?, ?, ?)', [tenantId, stateName.trim(), 'ACTIVE', userId]);
+      stateId = result.insertId;
+    }
+
+    // 2. Find or Create Region
+    let regions = await q('SELECT id FROM regions WHERE tenant_id = ? AND state_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, stateId, regionName.trim().toUpperCase()]);
+    let regionId;
+    if (regions.length > 0) {
+      regionId = regions[0].id;
+      await q("UPDATE regions SET status = 'ACTIVE' WHERE id = ?", [regionId]);
+    } else {
+      const result = await q('INSERT INTO regions (tenant_id, state_id, name, status, created_by) VALUES (?, ?, ?, ?, ?)', [tenantId, stateId, regionName.trim(), 'ACTIVE', userId]);
+      regionId = result.insertId;
+    }
+
+    // 3. Find or Create Cluster
+    let clusters = await q('SELECT id FROM clusters WHERE tenant_id = ? AND region_id = ? AND UPPER(name) = ? LIMIT 1', [tenantId, regionId, clusterName.trim().toUpperCase()]);
+    let clusterId;
+    if (clusters.length > 0) {
+      clusterId = clusters[0].id;
+      await q("UPDATE clusters SET status = 'ACTIVE' WHERE id = ?", [clusterId]);
+    } else {
+      const result = await q('INSERT INTO clusters (tenant_id, region_id, name, status, created_by) VALUES (?, ?, ?, ?, ?)', [tenantId, regionId, clusterName.trim(), 'ACTIVE', userId]);
+      clusterId = result.insertId;
+    }
+
+    // 4. Update existing branch record
+    await q('UPDATE branches SET cluster_id = ?, name = ?, status = ? WHERE tenant_id = ? AND id = ?', [clusterId, branchName.trim(), status || 'ACTIVE', tenantId, branchId]);
+
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+router.delete('/location-hierarchy/:id', requireAuth, async (req, res) => {
+  const role = req.user.normalized_role;
+  if (role !== 'IT_ADMIN' && role !== 'SUPER_ADMIN') {
+    return res.status(403).json({ success: false, message: 'Forbidden' });
+  }
+  const id = req.params.id;
+  try {
+    const { withTransaction } = require('../modules/tickets/repositories/mysql');
+    await withTransaction(async (tx) => {
+      await tx.query('UPDATE tickets SET branch_id = NULL WHERE tenant_id = ? AND branch_id = ?', [req.user.tenant_id, id]);
+      await tx.query('UPDATE users SET branch_id = NULL WHERE tenant_id = ? AND branch_id = ?', [req.user.tenant_id, id]);
+      await tx.query('UPDATE engineer_mapping SET branch_id = NULL WHERE tenant_id = ? AND branch_id = ?', [req.user.tenant_id, id]);
+      await tx.query('DELETE FROM branches WHERE tenant_id = ? AND id = ?', [req.user.tenant_id, id]);
+    });
+    res.json({ success: true });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 router.get('/states/:id/regions', requireAuth, async (req, res) => {
-  const data = await locationService.getRegionsByState(req.user.tenant_id, req.params.id);
+  const data = await locationService.getRegionsByState(req.user.tenant_id, req.params.id, req.user);
   res.json({ success: true, data });
 });
 
 router.get('/regions/:id/clusters', requireAuth, async (req, res) => {
-  const data = await locationService.getClustersByRegion(req.user.tenant_id, req.params.id);
+  const data = await locationService.getClustersByRegion(req.user.tenant_id, req.params.id, req.user);
   res.json({ success: true, data });
 });
 
 router.get('/clusters/:id/branches', requireAuth, async (req, res) => {
-  const data = await locationService.getBranchesByCluster(req.user.tenant_id, req.params.id);
+  const data = await locationService.getBranchesByCluster(req.user.tenant_id, req.params.id, req.user);
   res.json({ success: true, data });
 });
 

@@ -58,6 +58,15 @@ const createTicket = asyncHandler(async (req, res) => {
   normalizePayload(req);
   assertValidRequest(req);
   const result = await ticketService.createTicket(req.body, req.user);
+  if (result && result.duplicate) {
+    return res.status(409).json({
+      success: false,
+      message: 'You already have an active ticket for this issue. Please track the existing ticket instead of creating a duplicate request.',
+      errorCode: 'DUPLICATE_TICKET_DETECTED',
+      data: result.duplicateMeta,
+    });
+  }
+
   res.status(result.ticket?.isDraft ? 200 : 201).json({
     success: true,
     message: result.ticket?.isDraft ? 'Draft saved' : 'Ticket created',

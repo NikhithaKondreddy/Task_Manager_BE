@@ -9,7 +9,7 @@ function handleError(res, error, code) {
 module.exports = {
   listStates: async (req, res) => {
     try {
-      const data = await masterDataService.listStates(req.user.tenant_id, req.query);
+      const data = await masterDataService.listStates(req.user.tenant_id, req.query, req.user);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -42,7 +42,7 @@ module.exports = {
 
   listRegions: async (req, res) => {
     try {
-      const data = await masterDataService.listRegions(req.user.tenant_id, req.query);
+      const data = await masterDataService.listRegions(req.user.tenant_id, req.query, req.user);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -75,7 +75,7 @@ module.exports = {
 
   listClusters: async (req, res) => {
     try {
-      const data = await masterDataService.listClusters(req.user.tenant_id, req.query);
+      const data = await masterDataService.listClusters(req.user.tenant_id, req.query, req.user);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));
@@ -108,7 +108,7 @@ module.exports = {
 
   listBranches: async (req, res) => {
     try {
-      const data = await masterDataService.listBranches(req.user.tenant_id, req.query);
+      const data = await masterDataService.listBranches(req.user.tenant_id, req.query, req.user);
       res.json({ success: true, data });
     } catch (error) {
       res.status(500).json(errorResponse.serverError('Operation failed', 'SERVER_ERROR', { details: error.message }));

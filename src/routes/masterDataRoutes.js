@@ -5,8 +5,18 @@ const { requireAuth, requireRole } = require('../middleware/roles');
 
 // Read-only: any authenticated user can fetch location data (needed for ticket creation form)
 const readOnly = [requireAuth];
-// Write: restricted to Admin / Manager / SuperAdmin
-const writeOnly = [requireAuth, requireRole(['Admin', 'Manager', 'SuperAdmin'])];
+// Write: restricted strictly to IT Admin & SuperAdmin
+const writeOnly = [
+  requireAuth,
+  (req, res, next) => {
+    const role = req.user.normalized_role;
+    if (role === 'IT_ADMIN' || role === 'SUPER_ADMIN') {
+      return next();
+    }
+    const HttpError = require('../errors/HttpError');
+    return next(new HttpError(403, 'Insufficient role', 'AUTH_FORBIDDEN'));
+  }
+];
 
 router.get('/states', readOnly, masterDataController.listStates);
 router.post('/states', writeOnly, masterDataController.createState);
