@@ -28,30 +28,42 @@ const {
 
 const MODULE_ROUTE_MAP = {
   SuperAdmin: {
-    'Dashboard':                        '/super-admin/dashboard',
-    'Admin Management':                 '/super-admin/admin-management',
-    'Audit Logs':                       '/super-admin/audit-logs',
-    'Platform Settings':                '/super-admin/platform-settings',
-    'Settings & Master Configuration':  '/super-admin/settings-master-configuration',
-    'Rules Engine':                     '/super-admin/rules-engine',
+    'Dashboard': '/super-admin/dashboard',
+    'Admin Management': '/super-admin/admin-management',
+    'Audit Logs': '/super-admin/audit-logs',
+    'Platform Settings': '/super-admin/platform-settings',
+    'Settings & Master Configuration': '/super-admin/settings-master-configuration',
+    'Rules Engine': '/super-admin/rules-engine',
   },
   Admin: {
-    'Dashboard':        '/admin/dashboard',
-    'Projects':         '/admin/projects',
-    'Tasks':            '/admin/tasks',
-    'User Management':  '/admin/users'
+    'Dashboard': '/admin/dashboard',
+    'Projects': '/admin/projects',
+    'Tasks': '/admin/tasks',
+    'User Management': '/admin/users',
+    // IT Support navigation for admins
+    'IT Support Dashboard': '/it-support/dashboard',
+    'All Tickets': '/it-support/tickets',
+    'Create Ticket': '/it-support/create',
+    'My Assigned Tickets': '/it-support/my-tickets',
+    'Notifications': '/it-support/notifications'
   },
   Manager: {
-    'Dashboard':        '/manager/dashboard',
-    'Projects':         '/manager/projects',
-    'Tasks':            '/manager/tasks',
-    'User Management':  '/manager/users',
-    'Departments':      '/manager/departments'
+    'Dashboard': '/manager/dashboard',
+    'Projects': '/manager/projects',
+    'Tasks': '/manager/tasks',
+    'User Management': '/manager/users',
+    'Departments': '/manager/departments',
+    // IT Support navigation for managers
+    'IT Support Dashboard': '/it-support/dashboard',
+    'All Tickets': '/it-support/tickets',
+    'Create Ticket': '/it-support/create',
+    'My Assigned Tickets': '/it-support/my-tickets',
+    'Notifications': '/it-support/notifications'
   },
   Employee: {
-    'Dashboard':        '/employee/dashboard',
-    'Projects':         '/employee/projects',
-    'Tasks':            '/employee/tasks'
+    'Dashboard': '/employee/dashboard',
+    'Projects': '/employee/projects',
+    'Tasks': '/employee/tasks'
   },
   'IT Support': {
     'IT Support Dashboard': '/it-support/dashboard',
@@ -200,7 +212,7 @@ router.post('/refresh', (req, res) => {
 
       const resolvedTenantId = await resolveTenantPublicId(user.tenant_id).catch(() => String(user.tenant_id || ''));
       const userId = user.public_id || String(user._id);
-      try { res.setHeader('x-tenant-id', resolvedTenantId || ''); } catch (_) {}
+      try { res.setHeader('x-tenant-id', resolvedTenantId || ''); } catch (_) { }
 
       const userResp = { id: userId, email: user.email, name: user.name, role: persistRole(user.role), tenant_id: user.tenant_id || null };
 
@@ -352,8 +364,8 @@ function buildScopedEngineerConfig(scope, routePrefix) {
       ['Assigned Tickets', `${routePrefix}/tickets`, 'Ticket', 'tickets'],
       ['Escalations', `${routePrefix}/escalations`, 'ArrowUpRight', 'escalations'],
       ['Reports', `${routePrefix}/reports`, 'BarChart3', 'reports'],
-        ['Performance Dashboard', `${routePrefix}/performance-dashboard`, 'BarChart4', 'performance'],
-        ['Chatbot', `${routePrefix}/chatbot`, 'MessageCircle', 'chatbot'],
+      ['Performance Dashboard', `${routePrefix}/performance-dashboard`, 'BarChart4', 'performance'],
+      ['Chatbot', `${routePrefix}/chatbot`, 'MessageCircle', 'chatbot'],
     ],
     widgets: ENGINEER_DASHBOARD_WIDGETS,
   };
@@ -395,6 +407,7 @@ const ITSM_ROLE_CONFIG = {
       ['Reports', '/it-admin/reports', 'BarChart3', 'reports'],
       ['Notifications', '/it-admin/notifications', 'Bell', 'notifications'],
       ['Chatbot', '/it-admin/chatbot', 'MessageCircle', 'chatbot'],
+      ['Locations', '/it-admin/locations', 'MapPin', 'locations'],
     ],
     widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'slaBreaches', 'engineerPerformance', 'categoryBreakdown'],
   },
@@ -412,6 +425,7 @@ const ITSM_ROLE_CONFIG = {
       ['Reports', '/it-admin/reports', 'BarChart3', 'reports'],
       ['Notifications', '/it-admin/notifications', 'Bell', 'notifications'],
       ['Chatbot', '/it-admin/chatbot', 'MessageCircle', 'chatbot'],
+      ['Locations', '/it-admin/locations', 'MapPin', 'locations'],
     ],
     widgets: ['openTickets', 'closedTickets', 'pendingTickets', 'slaBreaches', 'engineerPerformance', 'categoryBreakdown'],
   },
@@ -1013,7 +1027,7 @@ async function completeLoginForUser(user, req, res) {
     let superAdminTenantId = null;
     if (!isSuperAdmin) {
       tenantPublicId = await resolveTenantPublicId(user.tenant_id).catch(() => String(user.tenant_id || ''));
-      try { res.setHeader('x-tenant-id', tenantPublicId || ''); } catch (_) {}
+      try { res.setHeader('x-tenant-id', tenantPublicId || ''); } catch (_) { }
       tenantInfo = { id: tenantPublicId, name: null, slug: null };
       try {
         const tenantRows = await qAsync('SELECT name, slug FROM tenants WHERE id = ? LIMIT 1', [user.tenant_id]);
@@ -1224,7 +1238,7 @@ router.post('/refresh', (req, res) => {
 
       const resolvedTenantId = await resolveTenantPublicId(user.tenant_id).catch(() => String(user.tenant_id || ''));
       const userId = user.public_id || String(user._id);
-      try { res.setHeader('x-tenant-id', resolvedTenantId || ''); } catch (_) {}
+      try { res.setHeader('x-tenant-id', resolvedTenantId || ''); } catch (_) { }
 
       const userResp = { id: userId, email: user.email, name: user.name, role: persistRole(user.role), tenant_id: user.tenant_id || null };
 

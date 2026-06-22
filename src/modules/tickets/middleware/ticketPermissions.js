@@ -16,6 +16,11 @@ function deny(res, message) {
 }
 
 function requireTicketViewAccess(req, res, next) {
+  const userRole = req.user && req.user.role;
+  // Allow Admin, Manager, and SuperAdmin to view tickets directly
+  if (['Admin', 'Manager', 'SuperAdmin'].includes(userRole)) {
+    return next();
+  }
   const { ticketRole, permissions } = withTicketPermissions(req);
   if (!ticketRole) return deny(res, 'Not allowed to view tickets');
   // allow scoped reads (e.g., regional/state scoped engineers) as well
@@ -26,6 +31,11 @@ function requireTicketViewAccess(req, res, next) {
 }
 
 function requireTicketCreateAccess(req, res, next) {
+  const userRole = req.user && req.user.role;
+  // Allow Admin, Manager, and SuperAdmin to create tickets directly
+  if (['Admin', 'Manager', 'SuperAdmin'].includes(userRole)) {
+    return next();
+  }
   const { ticketRole, permissions } = withTicketPermissions(req);
   if (!ticketRole || !permissions.create) return deny(res, 'Not allowed to create tickets');
   return next();

@@ -162,7 +162,8 @@ async function submitFeedback(ticketId, payload, user) {
 
   // Only the original requester (or explicitly requested-for user) may submit feedback
   const isRequester = Number(ticket.requester_user_id) === Number(user._id) || Number(ticket.requested_for_user_id) === Number(user._id) || Number(ticket.created_by_user_id) === Number(user._id);
-  if (!isRequester) {
+  // Allow elevated roles (can list all feedback) to submit feedback as well
+  if (!isRequester && !canListAllFeedback(user)) {
     throw new HttpError(403, 'Only the ticket requester can submit feedback', 'FEEDBACK_FORBIDDEN');
   }
 
