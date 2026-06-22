@@ -1,5 +1,6 @@
 const db = require('../db');
 const auditLogger = require('./auditLogger');
+const { normalizeRole } = require('../config/rbac');
 
 function query(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -88,8 +89,20 @@ async function logMasterAudit(action, tenantId, userId, entity, entityId, detail
   });
 }
 
-async function listStates(tenantId, options = {}) {
-  return listMasterRows('states', 'SELECT id, name, status FROM states', tenantId, options);
+async function listStates(tenantId, options = {}, user = null) {
+  const extraWhere = [];
+  const extraParams = [];
+  if (user) {
+    const userRole = normalizeRole(user.role);
+    if (userRole !== 'SUPER_ADMIN' && userRole !== 'IT_ADMIN') {
+      const allowed = await getAllowedLocationIds(tenantId, user._id);
+      if (allowed) {
+        extraWhere.push('id IN (?)');
+        extraParams.push(allowed.states.length > 0 ? allowed.states : [0]);
+      }
+    }
+  }
+  return listMasterRows('states', 'SELECT id, name, status FROM states', tenantId, options, extraWhere, extraParams);
 }
 
 async function createState(tenantId, payload, userId) {
@@ -128,12 +141,22 @@ async function deleteState(tenantId, id, userId) {
   return { id: Number(id), deleted: true, softDeleted: true, status: 'INACTIVE' };
 }
 
-async function listRegions(tenantId, options = {}) {
+async function listRegions(tenantId, options = {}, user = null) {
   const extraWhere = [];
   const extraParams = [];
   if (options.stateId || options.state_id) {
     extraWhere.push('state_id = ?');
     extraParams.push(options.stateId || options.state_id);
+  }
+  if (user) {
+    const userRole = normalizeRole(user.role);
+    if (userRole !== 'SUPER_ADMIN' && userRole !== 'IT_ADMIN') {
+      const allowed = await getAllowedLocationIds(tenantId, user._id);
+      if (allowed) {
+        extraWhere.push('id IN (?)');
+        extraParams.push(allowed.regions.length > 0 ? allowed.regions : [0]);
+      }
+    }
   }
   return listMasterRows(
     'regions',
@@ -189,12 +212,22 @@ async function deleteRegion(tenantId, id, userId) {
   return { id: Number(id), deleted: true, softDeleted: true, status: 'INACTIVE' };
 }
 
-async function listClusters(tenantId, options = {}) {
+async function listClusters(tenantId, options = {}, user = null) {
   const extraWhere = [];
   const extraParams = [];
   if (options.regionId || options.region_id) {
     extraWhere.push('region_id = ?');
     extraParams.push(options.regionId || options.region_id);
+  }
+  if (user) {
+    const userRole = normalizeRole(user.role);
+    if (userRole !== 'SUPER_ADMIN' && userRole !== 'IT_ADMIN') {
+      const allowed = await getAllowedLocationIds(tenantId, user._id);
+      if (allowed) {
+        extraWhere.push('id IN (?)');
+        extraParams.push(allowed.clusters.length > 0 ? allowed.clusters : [0]);
+      }
+    }
   }
   return listMasterRows(
     'clusters',
@@ -250,12 +283,22 @@ async function deleteCluster(tenantId, id, userId) {
   return { id: Number(id), deleted: true, softDeleted: true, status: 'INACTIVE' };
 }
 
-async function listBranches(tenantId, options = {}) {
+async function listBranches(tenantId, options = {}, user = null) {
   const extraWhere = [];
   const extraParams = [];
   if (options.clusterId || options.cluster_id) {
     extraWhere.push('cluster_id = ?');
     extraParams.push(options.clusterId || options.cluster_id);
+  }
+  if (user) {
+    const userRole = normalizeRole(user.role);
+    if (userRole !== 'SUPER_ADMIN' && userRole !== 'IT_ADMIN') {
+      const allowed = await getAllowedLocationIds(tenantId, user._id);
+      if (allowed) {
+        extraWhere.push('id IN (?)');
+        extraParams.push(allowed.branches.length > 0 ? allowed.branches : [0]);
+      }
+    }
   }
   return listMasterRows(
     'branches',
@@ -306,9 +349,102 @@ async function updateBranch(tenantId, id, payload, userId) {
 async function deleteBranch(tenantId, id, userId) {
   const rows = await query('SELECT id, cluster_id, name, status FROM branches WHERE tenant_id = ? AND id = ? LIMIT 1', [tenantId, id]);
   if (!rows.length) throw new Error('Branch not found');
-  await query("UPDATE branches SET status = 'INACTIVE', updated_at = NOW() WHERE tenant_id = ? AND id = ?", [tenantId, id]);
-  await logMasterAudit('BRANCH_DELETED', tenantId, userId, 'Branch', id, { softDelete: true }, rows[0], { ...rows[0], status: 'INACTIVE' });
-  return { id: Number(id), deleted: true, softDeleted: true, status: 'INACTIVE' };
+  const { withTransaction } = require('../modules/tickets/repositories/mysql');
+  await withTransaction(async (tx) => {
+    await tx.query('UPDATE tickets SET branch_id = NULL WHERE tenant_id = ? AND branch_id = ?', [tenantId, id]);
+    await tx.query('UPDATE users SET branch_id = NULL WHERE tenant_id = ? AND branch_id = ?', [tenantId, id]);
+    await tx.query('UPDATE engineer_mapping SET branch_id = NULL WHERE tenant_id = ? AND branch_id = ?', [tenantId, id]);
+    await tx.query('DELETE FROM branches WHERE tenant_id = ? AND id = ?', [tenantId, id]);
+  });
+  await logMasterAudit('BRANCH_DELETED', tenantId, userId, 'Branch', id, { softDelete: false, permanentDelete: true }, rows[0], null);
+  return { id: Number(id), deleted: true, permanentDelete: true };
+}
+
+async function getAllowedLocationIds(tenantId, userId) {
+  const mappings = await query(
+    "SELECT state_id, region_id, cluster_id, branch_id FROM engineer_mapping WHERE tenant_id = ? AND engineer_id = ? AND is_active = 1",
+    [tenantId, userId]
+  );
+  const userRows = await query(
+    "SELECT state_id, region_id, cluster_id, branch_id FROM users WHERE tenant_id = ? AND _id = ? LIMIT 1",
+    [tenantId, userId]
+  );
+
+  const A_states = [];
+  const A_regions = [];
+  const A_clusters = [];
+  const A_branches = [];
+
+  const addUnique = (arr, val) => {
+    if (val != null && val !== '' && !arr.includes(Number(val))) {
+      arr.push(Number(val));
+    }
+  };
+
+  mappings.forEach(m => {
+    addUnique(A_states, m.state_id);
+    addUnique(A_regions, m.region_id);
+    addUnique(A_clusters, m.cluster_id);
+    addUnique(A_branches, m.branch_id);
+  });
+
+  if (userRows.length > 0) {
+    const u = userRows[0];
+    addUnique(A_states, u.state_id);
+    addUnique(A_regions, u.region_id);
+    addUnique(A_clusters, u.cluster_id);
+    addUnique(A_branches, u.branch_id);
+  }
+
+  if (!A_states.length && !A_regions.length && !A_clusters.length && !A_branches.length) {
+    return null;
+  }
+
+  const resolveList = (arr) => arr.length > 0 ? arr : [0];
+
+  const allowedStatesRows = await query(`
+    SELECT DISTINCT id FROM states WHERE tenant_id = ? AND (
+      id IN (?)
+      OR id IN (SELECT state_id FROM regions WHERE id IN (?))
+      OR id IN (SELECT state_id FROM regions WHERE id IN (SELECT region_id FROM clusters WHERE id IN (?)))
+      OR id IN (SELECT state_id FROM regions WHERE id IN (SELECT region_id FROM clusters WHERE id IN (SELECT cluster_id FROM branches WHERE id IN (?))))
+    )
+  `, [tenantId, resolveList(A_states), resolveList(A_regions), resolveList(A_clusters), resolveList(A_branches)]);
+  const allowedStates = allowedStatesRows.map(r => r.id);
+
+  const allowedRegionsRows = await query(`
+    SELECT DISTINCT id FROM regions WHERE tenant_id = ? AND (
+      state_id IN (?)
+      OR id IN (?)
+      OR id IN (SELECT region_id FROM clusters WHERE id IN (?))
+      OR id IN (SELECT region_id FROM clusters WHERE id IN (SELECT cluster_id FROM branches WHERE id IN (?)))
+    )
+  `, [tenantId, resolveList(allowedStates), resolveList(A_regions), resolveList(A_clusters), resolveList(A_branches)]);
+  const allowedRegions = allowedRegionsRows.map(r => r.id);
+
+  const allowedClustersRows = await query(`
+    SELECT DISTINCT id FROM clusters WHERE tenant_id = ? AND (
+      region_id IN (?)
+      OR id IN (?)
+      OR id IN (SELECT cluster_id FROM branches WHERE id IN (?))
+    )
+  `, [tenantId, resolveList(allowedRegions), resolveList(A_clusters), resolveList(A_branches)]);
+  const allowedClusters = allowedClustersRows.map(r => r.id);
+
+  const allowedBranchesRows = await query(`
+    SELECT DISTINCT id FROM branches WHERE tenant_id = ? AND (
+      cluster_id IN (?)
+      OR id IN (?)
+    )
+  `, [tenantId, resolveList(allowedClusters), resolveList(A_branches)]);
+  const allowedBranches = allowedBranchesRows.map(r => r.id);
+
+  return {
+    states: allowedStates,
+    regions: allowedRegions,
+    clusters: allowedClusters,
+    branches: allowedBranches
+  };
 }
 
 module.exports = {
@@ -328,4 +464,5 @@ module.exports = {
   createBranch,
   updateBranch,
   deleteBranch,
+  getAllowedLocationIds,
 };
