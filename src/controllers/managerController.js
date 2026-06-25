@@ -2,6 +2,7 @@ const db = require(__root + 'db');
 const RoleBasedLoginResponse = require(__root + 'controllers/utils/RoleBasedLoginResponse');
 const { normalizeProjectStatus } = require(__root + 'utils/projectStatus');
 const errorResponse = require(__root + 'utils/errorResponse');
+const { getExtendedDashboardMetrics } = require('../services/reportService');
 
 let logger;
 try { logger = require(global.__root + 'logger'); } catch (e) { try { logger = require('../../logger'); } catch (e2) { logger = console; } }
@@ -1017,12 +1018,15 @@ module.exports = {
         };
       });
 
+      const extendedMetrics = await getExtendedDashboardMetrics(req.user.tenant_id, { projectIds }).catch(() => ({}));
+
       return res.json({
-        metrics: { projectCount, taskCount, clientCount: clients.length },
+        metrics: { projectCount, taskCount, clientCount: clients.length, ...extendedMetrics },
         projects: projects.map(p => ({ id: p.public_id || String(p.id), name: p.name, status: p.status, priority: p.priority, stage: p.stage || null, client: p.client_id ? { id: p.client_public_id || String(p.client_id), name: p.client_name } : null })),
         clients: (clients || []).map(c => ({ id: c.public_id || String(c.id), name: c.name, company: c.company || null })),
         employees,
         tasks,
+        ...extendedMetrics
       });
     } catch (error) {
       return res.status(error.status || 500).json({ success: false, error: error.message });

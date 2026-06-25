@@ -245,4 +245,215 @@ async function generateProjectReport(user, projectIdentifier, startDate, endDate
   };
 }
 
-module.exports = { generateProjectReport, projectLookupDiagnostic };
+async function getExtendedDashboardMetrics(tenantId, options = {}) {
+  const { projectIds, userId } = options;
+  
+  let taskWhere = ['t.tenant_id = ?'];
+  let taskParams = [tenantId];
+  
+  if (projectIds && projectIds.length > 0) {
+    taskWhere.push('t.project_id IN (?)');
+    taskParams.push(projectIds);
+  }
+  
+  if (userId) {
+    taskWhere.push('exists (select 1 from task_assignments ta where ta.task_id = t.id and ta.user_id = ?)');
+    taskParams.push(userId);
+  }
+  
+  const whereClause = taskWhere.join(' AND ');
+
+  // 1. Task Counts & Status Distribution
+  const countsSql = `
+    SELECT 
+      COUNT(*) AS total,
+      SUM(CASE WHEN UPPER(t.status) IN ('PENDING', 'NOT STARTED', 'TO DO') THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN UPPER(t.status) IN ('IN PROGRESS', 'IN_PROGRESS') THEN 1 ELSE 0 END) AS in_progress,
+      SUM(CASE WHEN UPPER(t.status) IN ('COMPLETED', 'APPROVED') THEN 1 ELSE 0 END) AS completed,
+      SUM(CASE WHEN t.taskDate < CURDATE() AND UPPER(t.status) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') THEN 1 ELSE 0 END) AS overdue,
+      SUM(CASE WHEN UPPER(t.status) = 'ON HOLD' THEN 1 ELSE 0 END) AS on_hold
+    FROM tasks t
+    WHERE ${whereClause}
+  `;
+  const countsResult = await q(countsSql, taskParams);
+  const counts = countsResult[0] || {};
+  
+  // 2. Daily Task Summary (last 30 days)
+  const dailyCreatedSql = `
+    SELECT DATE(t.createdAt) AS date, COUNT(*) AS count
+    FROM tasks t
+    WHERE ${whereClause} AND t.createdAt >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY DATE(t.createdAt)
+  `;
+  const dailyCompletedSql = `
+    SELECT DATE(t.completed_at) AS date, COUNT(*) AS count
+    FROM tasks t
+    WHERE ${whereClause} AND t.completed_at >= DATE_SUB(CURDATE(), INTERVAL 30 DAY)
+    GROUP BY DATE(t.completed_at)
+  `;
+  
+  const [dailyCreated, dailyCompleted] = await Promise.all([
+    q(dailyCreatedSql, taskParams).catch(() => []),
+    q(dailyCompletedSql, taskParams).catch(() => [])
+  ]);
+  
+  // 3. Weekly Task Summary (last 12 weeks)
+  const weeklyCreatedSql = `
+    SELECT YEAR(t.createdAt) AS year, WEEK(t.createdAt) AS week, COUNT(*) AS count
+    FROM tasks t
+    WHERE ${whereClause} AND t.createdAt >= DATE_SUB(CURDATE(), INTERVAL 12 WEEK)
+    GROUP BY YEAR(t.createdAt), WEEK(t.createdAt)
+  `;
+  const weeklyCompletedSql = `
+    SELECT YEAR(t.completed_at) AS year, WEEK(t.completed_at) AS week, COUNT(*) AS count
+    FROM tasks t
+    WHERE ${whereClause} AND t.completed_at >= DATE_SUB(CURDATE(), INTERVAL 12 WEEK)
+    GROUP BY YEAR(t.completed_at), WEEK(t.completed_at)
+  `;
+  const [weeklyCreated, weeklyCompleted] = await Promise.all([
+    q(weeklyCreatedSql, taskParams).catch(() => []),
+    q(weeklyCompletedSql, taskParams).catch(() => [])
+  ]);
+
+  // 4. Monthly Task Summary (last 12 months)
+  const monthlyCreatedSql = `
+    SELECT YEAR(t.createdAt) AS year, MONTH(t.createdAt) AS month, COUNT(*) AS count
+    FROM tasks t
+    WHERE ${whereClause} AND t.createdAt >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+    GROUP BY YEAR(t.createdAt), MONTH(t.createdAt)
+  `;
+  const monthlyCompletedSql = `
+    SELECT YEAR(t.completed_at) AS year, MONTH(t.completed_at) AS month, COUNT(*) AS count
+    FROM tasks t
+    WHERE ${whereClause} AND t.completed_at >= DATE_SUB(CURDATE(), INTERVAL 12 MONTH)
+    GROUP BY YEAR(t.completed_at), MONTH(t.completed_at)
+  `;
+  const [monthlyCreated, monthlyCompleted] = await Promise.all([
+    q(monthlyCreatedSql, taskParams).catch(() => []),
+    q(monthlyCompletedSql, taskParams).catch(() => [])
+  ]);
+
+  // 5. User-wise Task Performance
+  let userPerformance = [];
+  try {
+    let userWhere = ['u.tenant_id = ? AND u.role = \'Employee\''];
+    let userParams = [tenantId];
+    if (userId) {
+      userWhere.push('u._id = ?');
+      userParams.push(userId);
+    }
+    
+    // Join tasks with matching filters
+    let taskFilter = '';
+    if (projectIds && projectIds.length > 0) {
+      taskFilter += ' AND t.project_id IN (?)';
+      userParams.push(projectIds);
+    }
+    
+    const userPerfSql = `
+      SELECT 
+        u._id AS userId,
+        u.public_id AS userPublicId,
+        u.name AS userName,
+        u.role AS userRole,
+        COUNT(ta.task_id) AS totalTasks,
+        SUM(CASE WHEN t.status = 'Completed' OR t.status = 'Approved' THEN 1 ELSE 0 END) AS completedTasks,
+        SUM(CASE WHEN t.status = 'In Progress' OR t.status = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS inProgressTasks,
+        SUM(CASE WHEN t.status = 'Pending' OR t.status = 'PENDING' THEN 1 ELSE 0 END) AS pendingTasks,
+        SUM(CASE WHEN t.taskDate < CURDATE() AND t.status NOT IN ('Completed', 'Approved', 'Closed') THEN 1 ELSE 0 END) AS overdueTasks
+      FROM users u
+      LEFT JOIN task_assignments ta ON u._id = ta.user_id
+      LEFT JOIN tasks t ON ta.task_id = t.id ${taskFilter}
+      WHERE ${userWhere.join(' AND ')}
+      GROUP BY u._id, u.public_id, u.name, u.role
+      ORDER BY u.name ASC
+    `;
+    const userPerfRows = await q(userPerfSql, userParams);
+    userPerformance = (userPerfRows || []).map(r => {
+      const total = Number(r.totalTasks) || 0;
+      const completed = Number(r.completedTasks) || 0;
+      const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
+      return {
+        userId: r.userPublicId || String(r.userId),
+        userName: r.userName,
+        role: r.userRole,
+        totalTasks: total,
+        completed: completed,
+        inProgress: Number(r.inProgressTasks) || 0,
+        pending: Number(r.pendingTasks) || 0,
+        overdue: Number(r.overdueTasks) || 0,
+        completionRate
+      };
+    });
+  } catch (e) {
+    logger.warn('Failed to calculate user performance: ' + e.message);
+  }
+
+  // Helper to align date series
+  const dailySummary = [];
+  const dailyMap = {};
+  dailyCreated.forEach(c => {
+    const d = c.date ? new Date(c.date).toISOString().split('T')[0] : 'Unknown';
+    dailyMap[d] = { date: d, created: c.count, completed: 0 };
+  });
+  dailyCompleted.forEach(c => {
+    const d = c.date ? new Date(c.date).toISOString().split('T')[0] : 'Unknown';
+    if (!dailyMap[d]) dailyMap[d] = { date: d, created: 0, completed: 0 };
+    dailyMap[d].completed = c.count;
+  });
+  Object.keys(dailyMap).sort().forEach(k => dailySummary.push(dailyMap[k]));
+
+  const weeklySummary = [];
+  const weeklyMap = {};
+  weeklyCreated.forEach(c => {
+    const k = `${c.year}-W${c.week}`;
+    weeklyMap[k] = { label: k, created: c.count, completed: 0 };
+  });
+  weeklyCompleted.forEach(c => {
+    const k = `${c.year}-W${c.week}`;
+    if (!weeklyMap[k]) weeklyMap[k] = { label: k, created: 0, completed: 0 };
+    weeklyMap[k].completed = c.count;
+  });
+  Object.keys(weeklyMap).sort().forEach(k => weeklySummary.push(weeklyMap[k]));
+
+  const monthlySummary = [];
+  const monthlyMap = {};
+  monthlyCreated.forEach(c => {
+    const k = `${c.year}-${String(c.month).padStart(2, '0')}`;
+    monthlyMap[k] = { label: k, created: c.count, completed: 0 };
+  });
+  monthlyCompleted.forEach(c => {
+    const k = `${c.year}-${String(c.month).padStart(2, '0')}`;
+    if (!monthlyMap[k]) monthlyMap[k] = { label: k, created: 0, completed: 0 };
+    monthlyMap[k].completed = c.count;
+  });
+  Object.keys(monthlyMap).sort().forEach(k => monthlySummary.push(monthlyMap[k]));
+
+  return {
+    totalTasks: Number(counts.total || 0),
+    pendingTasks: Number(counts.pending || 0),
+    inProgressTasks: Number(counts.in_progress || 0),
+    completedTasks: Number(counts.completed || 0),
+    overdueTasks: Number(counts.overdue || 0),
+    onHoldTasks: Number(counts.on_hold || 0),
+    dailyTaskSummary: dailySummary,
+    weeklyTaskSummary: weeklySummary,
+    monthlyTaskSummary: monthlySummary,
+    userWiseTaskPerformance: userPerformance,
+    taskStatusDistribution: [
+      { name: 'Pending', value: Number(counts.pending || 0) },
+      { name: 'In Progress', value: Number(counts.in_progress || 0) },
+      { name: 'Completed', value: Number(counts.completed || 0) },
+      { name: 'On Hold', value: Number(counts.on_hold || 0) },
+      { name: 'Overdue', value: Number(counts.overdue || 0) }
+    ],
+    taskCompletionTrends: dailySummary.map(item => ({
+      date: item.date,
+      completionRate: (item.created > 0) ? Math.round((item.completed / item.created) * 100) : 0,
+      created: item.created,
+      completed: item.completed
+    }))
+  };
+}
+
+module.exports = { generateProjectReport, projectLookupDiagnostic, getExtendedDashboardMetrics };

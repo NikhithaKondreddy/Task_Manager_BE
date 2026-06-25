@@ -329,9 +329,6 @@ router.post('/', upload.array('documents', 10), ruleEngine(RULES.PROJECT_CREATE)
       project_manager_id = userId; // override with self
     }
 
-    console.log('User Role:', user.role);
-    console.log('Final project_manager_id:', project_manager_id);
-
     let pmId = null;
     let projectManagerInfo = null;
     if (userRole === 'MANAGER') {

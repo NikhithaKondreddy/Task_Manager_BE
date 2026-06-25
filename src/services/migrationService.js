@@ -31,7 +31,9 @@ const MIGRATION_ORDER = [
   'notifications',
   'tickets',
   'comments',
-  'attachments'
+  'attachments',
+  'files',
+  'task_comments'
 ];
 
 // Migration schemas
@@ -214,6 +216,41 @@ const MIGRATION_SCHEMAS = {
       INDEX idx_attachments_comment_id (comment_id),
       CONSTRAINT fk_attachments_ticket_id FOREIGN KEY (ticket_id) REFERENCES tickets(id) ON DELETE CASCADE,
       CONSTRAINT fk_attachments_comment_id FOREIGN KEY (comment_id) REFERENCES comments(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `,
+
+  files: `
+    CREATE TABLE IF NOT EXISTS files (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      file_url VARCHAR(500) NOT NULL,
+      file_name VARCHAR(255) NOT NULL,
+      file_type VARCHAR(100) DEFAULT NULL,
+      file_size BIGINT DEFAULT NULL,
+      task_id INT NOT NULL,
+      user_id INT NOT NULL,
+      uploaded_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      isActive TINYINT(1) NOT NULL DEFAULT 1,
+      tenant_id INT DEFAULT NULL,
+      source VARCHAR(50) DEFAULT 'upload',
+      metadata JSON DEFAULT NULL,
+      INDEX idx_files_task_id (task_id),
+      INDEX idx_files_tenant_id (tenant_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `,
+
+  task_comments: `
+    CREATE TABLE IF NOT EXISTS task_comments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      task_id INT NOT NULL,
+      user_id INT NULL,
+      comment TEXT NOT NULL,
+      tenant_id INT DEFAULT NULL,
+      createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_task_comments_task_id (task_id),
+      INDEX idx_task_comments_tenant_id (tenant_id),
+      CONSTRAINT fk_task_comments_task_id FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      CONSTRAINT fk_task_comments_user_id FOREIGN KEY (user_id) REFERENCES users(_id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
   `
 };

@@ -55,9 +55,6 @@ class RuleEngine {
       if (rulesToEvaluate.length === 0) {
         rulesToEvaluate = this.rules;
       }
-    }
-
-    console.log('[RuleEngine] Evaluating with context:', JSON.stringify(context, null, 2));
 
     const decision = evaluateRules(rulesToEvaluate, context);
 

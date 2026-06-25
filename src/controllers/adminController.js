@@ -135,6 +135,8 @@ function safeSelect(table, baseCols, optionalCols = [], whereClause = '', params
   })();
 }
 
+const { getExtendedDashboardMetrics } = require('../services/reportService');
+
 module.exports = {
   getDashboard: async (req, res) => {
     try {
@@ -159,6 +161,8 @@ module.exports = {
         [tenantId]
       );
 
+      const extendedMetrics = await getExtendedDashboardMetrics(tenantId);
+
       return res.json({
         status: 'success',
         data: {
@@ -170,7 +174,8 @@ module.exports = {
             pendingTasks,
             inProgressTasks,
             completedTasks,
-            overdueTasks
+            overdueTasks,
+            ...extendedMetrics
           },
           recentProjects
         },

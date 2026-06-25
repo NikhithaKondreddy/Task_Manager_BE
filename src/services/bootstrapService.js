@@ -151,7 +151,8 @@ async function ensureTenantColumns() {
     'subtasks',
     'client_contacts',
     'client_viewers',
-    'project_departments'
+    'project_departments',
+    'files'
   ];
 
   for (const tableName of tenantTables) {
@@ -305,6 +306,29 @@ async function ensureSoftDeleteColumns() {
     await ensureColumn('tasks', 'rejection_reason TEXT NULL');
     await ensureColumn('tasks', 'rejected_by INT NULL');
     await ensureColumn('tasks', 'rejected_at DATETIME NULL');
+    await ensureColumn('tasks', 'isDeleted TINYINT(1) NOT NULL DEFAULT 0');
+    await ensureColumn('tasks', 'deleted_at DATETIME NULL');
+    await ensureColumn('tasks', 'deleted_by INT NULL');
+    
+    // Future scalability and recurrence columns
+    await ensureColumn('tasks', 'parent_id INT NULL');
+    await ensureColumn('tasks', 'checkpoints JSON NULL');
+    await ensureColumn('tasks', 'dependencies JSON NULL');
+    await ensureColumn('tasks', 'progress INT DEFAULT 0');
+    await ensureColumn('tasks', 'auto_progress_calculation TINYINT(1) DEFAULT 0');
+    await ensureColumn('tasks', "recurrence ENUM('Individual', 'Daily', 'Weekly', 'Monthly') NOT NULL DEFAULT 'Individual'");
+    await ensureColumn('tasks', 'recurrence_parent_id INT NULL');
+
+    // High performance indexes
+    await ensureIndex('tasks', 'idx_tasks_status', 'INDEX idx_tasks_status (status)');
+    await ensureIndex('tasks', 'idx_tasks_taskDate', 'INDEX idx_tasks_taskDate (taskDate)');
+    await ensureIndex('tasks', 'idx_tasks_parent_id', 'INDEX idx_tasks_parent_id (parent_id)');
+    await ensureIndex('tasks', 'idx_tasks_recurrence_parent_id', 'INDEX idx_tasks_recurrence_parent_id (recurrence_parent_id)');
+    await ensureIndex('tasks', 'idx_tasks_createdAt', 'INDEX idx_tasks_createdAt (createdAt)');
+    
+    if (await tableExists('files')) {
+      await ensureIndex('files', 'idx_files_task_id', 'INDEX idx_files_task_id (task_id)');
+    }
   }
 }
 

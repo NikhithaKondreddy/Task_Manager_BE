@@ -775,6 +775,7 @@ CREATE TABLE `subtasks` (
   `tag` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `estimated_hours` decimal(8,2) DEFAULT NULL,
   `status` varchar(50) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT 'PENDING',
+  `isDeleted` tinyint(1) DEFAULT '0',
   `tenant_id` int DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
@@ -813,6 +814,7 @@ CREATE TABLE `tasks` (
   `rejection_reason` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
   `rejected_by` int DEFAULT NULL,
   `rejected_at` datetime DEFAULT NULL,
+  `isDeleted` tinyint(1) DEFAULT '0',
   `tenant_id` int DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 

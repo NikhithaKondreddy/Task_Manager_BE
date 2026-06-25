@@ -957,13 +957,23 @@ function filterTaskResponseForRole(taskData, req) {
     live_timer: myAssignment.live_timer || null,
     completed_at: myAssignment.completed_at || null,
     rejection_reason: myAssignment.rejection_reason || null,
-      // Use live_total_seconds which already incorporates elapsed time when IN_PROGRESS
-      total_time_seconds: myAssignment.live_total_seconds != null ? myAssignment.live_total_seconds : (myAssignment.total_duration || 0),
-      total_time_hours: myAssignment.live_total_hours != null ? myAssignment.live_total_hours : Number(((myAssignment.total_duration || 0) / 3600).toFixed(2)),
-      total_time_hhmmss: myAssignment.live_total_hhmmss != null ? myAssignment.live_total_hhmmss : formatDuration(myAssignment.total_duration || 0),
+    // Use live_total_seconds which already incorporates elapsed time when IN_PROGRESS
+    total_time_seconds: myAssignment.live_total_seconds != null ? myAssignment.live_total_seconds : (myAssignment.total_duration || 0),
+    total_time_hours: myAssignment.live_total_hours != null ? myAssignment.live_total_hours : Number(((myAssignment.total_duration || 0) / 3600).toFixed(2)),
+    total_time_hhmmss: myAssignment.live_total_hhmmss != null ? myAssignment.live_total_hhmmss : formatDuration(myAssignment.total_duration || 0),
     // ── per-user checklist ──────────────────────────────────────────────────
     checklist: myAssignment.checklist || [],
-    checklist_progress: myAssignment.checklist_progress || { total: 0, completed: 0, percent: 0 }
+    checklist_progress: myAssignment.checklist_progress || { total: 0, completed: 0, percent: 0 },
+    // ── future-ready scalability columns ──
+    parent_id: taskData.parent_id || null,
+    checkpoints: taskData.checkpoints || null,
+    dependencies: taskData.dependencies || null,
+    progress: taskData.progress != null ? Number(taskData.progress) : 0,
+    auto_progress_calculation: taskData.auto_progress_calculation != null ? Boolean(taskData.auto_progress_calculation) : false,
+    recurrence: taskData.recurrence || 'Individual',
+    recurrence_parent_id: taskData.recurrence_parent_id || null,
+    children: taskData.children || [],
+    files: taskData.files || []
   };
 }
 
@@ -1005,7 +1015,18 @@ function formatTenantTask(task, assignees, tenantId) {
       name: task.project_name || null
     } : null,
     assignees,
-    global_status: derivedGlobalStatus
+    global_status: derivedGlobalStatus,
+
+    // Future-ready scalability and recurrence fields
+    parent_id: task.parent_id || null,
+    parent_public_id: task.parent_public_id || null,
+    parent_title: task.parent_title || null,
+    checkpoints: task.checkpoints ? (typeof task.checkpoints === 'string' ? JSON.parse(task.checkpoints) : task.checkpoints) : null,
+    dependencies: task.dependencies ? (typeof task.dependencies === 'string' ? JSON.parse(task.dependencies) : task.dependencies) : null,
+    progress: task.progress != null ? Number(task.progress) : 0,
+    auto_progress_calculation: task.auto_progress_calculation != null ? Boolean(task.auto_progress_calculation) : false,
+    recurrence: task.recurrence || 'Individual',
+    recurrence_parent_id: task.recurrence_parent_id || null
   };
 }
 
@@ -1171,6 +1192,116 @@ async function resolveTenantTask(identifier, tenantId, options = {}) {
   sql += 'LIMIT 1';
   const rows = await q(sql, params);
   return rows && rows.length ? rows[0] : null;
+}
+
+async function validateTaskCompletionEligibility(connection, taskId, tenantId) {
+  const rows = await qConn(
+    connection,
+    'SELECT id, checkpoints, parent_id FROM tasks WHERE id = ?',
+    [taskId]
+  );
+  if (!rows || rows.length === 0) return { eligible: true };
+  const task = rows[0];
+
+  const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
+  const childRows = await qConn(
+    connection,
+    `SELECT COUNT(*) as count FROM tasks WHERE parent_id = ? AND status NOT IN ('Completed', 'Approved') ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''}`,
+    [taskId]
+  );
+  if (childRows && childRows[0] && childRows[0].count > 0) {
+    return { eligible: false, error: 'Cannot complete parent task: all child tasks must be completed' };
+  }
+
+  const checkpoints = task.checkpoints ? (typeof task.checkpoints === 'string' ? JSON.parse(task.checkpoints) : task.checkpoints) : null;
+  if (Array.isArray(checkpoints) && checkpoints.length > 0) {
+    const incompleteMandatory = checkpoints.filter(c => c.mandatory && c.status !== 'COMPLETED');
+    if (incompleteMandatory.length > 0) {
+      return { eligible: false, error: 'Cannot complete task: mandatory checkpoints are incomplete' };
+    }
+  }
+
+  return { eligible: true };
+}
+
+async function recalculateTaskProgressAndStatus(connection, taskId, tenantId) {
+  if (!taskId) return;
+  
+  const rows = await qConn(
+    connection,
+    'SELECT id, parent_id, checkpoints, auto_progress_calculation, status FROM tasks WHERE id = ?',
+    [taskId]
+  );
+  if (!rows || rows.length === 0) return;
+  const task = rows[0];
+
+  const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
+  const children = await qConn(
+    connection,
+    `SELECT id, status, progress FROM tasks WHERE parent_id = ? ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''}`,
+    [taskId]
+  );
+
+  let newProgress = null;
+  let newStatus = null;
+
+  if (children && children.length > 0) {
+    const total = children.length;
+    const completed = children.filter(c => ['Completed', 'Approved'].includes(c.status)).length;
+    newProgress = Math.round((completed / total) * 100);
+
+    const statuses = children.map(c => c.status);
+    const hasActiveChild = statuses.some(s => ['In Progress', 'Completed', 'Approved'].includes(s));
+    const allCompleted = children.every(c => ['Completed', 'Approved'].includes(c.status));
+
+    if (allCompleted) {
+      newStatus = 'Completed';
+    } else {
+      const anyActiveOrDone = children.some(c => ['In Progress', 'Completed', 'Approved'].includes(c.status));
+      if (anyActiveOrDone) {
+        if (['Pending', 'Completed', 'Approved'].includes(task.status)) {
+          newStatus = 'In Progress';
+        }
+      } else {
+        if (['In Progress', 'Completed', 'Approved'].includes(task.status)) {
+          newStatus = 'Pending';
+        }
+      }
+    }
+  } else {
+    const checkpoints = task.checkpoints ? (typeof task.checkpoints === 'string' ? JSON.parse(task.checkpoints) : task.checkpoints) : null;
+    if (Array.isArray(checkpoints) && checkpoints.length > 0) {
+      const total = checkpoints.length;
+      const completed = checkpoints.filter(c => c.status === 'COMPLETED').length;
+      newProgress = Math.round((completed / total) * 100);
+    }
+  }
+
+  const updates = [];
+  const params = [];
+  if (newProgress !== null) {
+    updates.push('progress = ?');
+    params.push(newProgress);
+  }
+  if (newStatus !== null && newStatus !== task.status) {
+    updates.push('status = ?');
+    updates.push('stage = ?');
+    params.push(newStatus);
+    params.push(taskStageToDb(newStatus));
+  }
+
+  if (updates.length > 0) {
+    params.push(taskId);
+    await qConn(
+      connection,
+      `UPDATE tasks SET ${updates.join(', ')} WHERE id = ?`,
+      params
+    );
+  }
+
+  if (task.parent_id) {
+    await recalculateTaskProgressAndStatus(connection, task.parent_id, tenantId);
+  }
 }
 
 async function loadTaskAssignmentsForTenant(taskId, tenantId) {
@@ -1386,10 +1517,13 @@ async function loadTenantTaskForResponse(taskId, tenantId, req = null) {
              c.name AS client_name,
              ${hasClientPublic ? 'c.public_id' : 'NULL'} AS client_public_id,
              p.name AS project_name,
-             ${hasProjectPublic ? 'p.public_id' : 'NULL'} AS project_public_id
+             ${hasProjectPublic ? 'p.public_id' : 'NULL'} AS project_public_id,
+             pt.public_id AS parent_public_id,
+             pt.title AS parent_title
       FROM tasks t
       LEFT JOIN clients c ON c.id = t.client_id
       LEFT JOIN projects p ON p.id = t.project_id
+      LEFT JOIN tasks pt ON pt.id = t.parent_id
       WHERE t.id = ?${hasTenantId ? ' AND t.tenant_id = ?' : ''}
       LIMIT 1
     `,
@@ -1407,7 +1541,56 @@ async function loadTenantTaskForResponse(taskId, tenantId, req = null) {
     assignee.checklist_progress = { total, completed: done, percent: total > 0 ? Math.round((done / total) * 100) : 0 };
   });
 
+  const files = await new Promise((resolve, reject) => db.query(
+    `SELECT f.id, f.file_url, f.file_name, f.file_type, f.file_size, f.uploaded_at, f.source, u.name as uploaded_by_name, u.public_id as uploaded_by_user_id
+     FROM files f
+     LEFT JOIN users u ON f.user_id = u._id
+     WHERE f.task_id = ? AND f.isActive = 1
+     ORDER BY f.uploaded_at DESC`,
+    [taskId], (err, rows) => err ? reject(err) : resolve(rows)
+  )).catch(() => []);
+
   const formatted = formatTenantTask(rows[0], assignees, tenantId);
+
+  const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
+  logger.info(`loadTenantTaskForResponse: taskId=${taskId}, hasTaskDeleted=${hasTaskDeleted}`);
+  const childRows = await q(
+    `SELECT id, public_id, title, status, progress, priority
+     FROM tasks
+     WHERE parent_id = ? ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''}`,
+    [taskId]
+  );
+  formatted.children = (childRows || []).map(c => ({
+    id: c.public_id || String(c.id),
+    internalId: String(c.id),
+    title: c.title || null,
+    status: c.status || null,
+    progress: c.progress != null ? Number(c.progress) : 0,
+    priority: c.priority || null
+  }));
+  
+  formatted.files = (files || []).map(f => {
+    let url = f.file_url || null;
+    if (url && url.startsWith('/uploads/')) {
+      const rel = url.replace(/^\/uploads\//, '');
+      const parts = rel.split('/').map(p => encodeURIComponent(p));
+      url = `${req ? (req.protocol + '://' + req.get('host')) : ''}/uploads/${parts.join('/')}`;
+    }
+    return {
+      id: f.id != null ? String(f.id) : null,
+      url,
+      name: f.file_name || null,
+      type: f.file_type || null,
+      size: f.file_size || null,
+      source: f.source || 'upload',
+      uploadedAt: f.uploaded_at ? new Date(f.uploaded_at).toISOString() : null,
+      uploadedBy: f.uploaded_by_user_id ? {
+        id: f.uploaded_by_user_id,
+        name: f.uploaded_by_name || null
+      } : null
+    };
+  });
+
   return req ? filterTaskResponseForRole(formatted, req) : formatted;
 }
 
@@ -1808,6 +1991,23 @@ async function createTenantTask(req, res) {
   const timeAlloted = req.body.time_alloted ?? req.body.timeAlloted ?? req.body.estimatedHours ?? null;
   const projectRef = req.body.project_id || req.body.projectId || req.body.projectPublicId || null;
   const clientRef = req.body.client_id || req.body.clientId || null;
+  const recurrence = ['Individual', 'Daily', 'Weekly', 'Monthly'].includes(req.body.recurrence) ? req.body.recurrence : 'Individual';
+
+  const parentRef = req.body.parent_id || req.body.parentId || null;
+  const checkpoints = req.body.checkpoints || null;
+  const checkpointsJson = checkpoints ? (typeof checkpoints === 'string' ? checkpoints : JSON.stringify(checkpoints)) : null;
+  const dependencies = req.body.dependencies || null;
+  const dependenciesJson = dependencies ? (typeof dependencies === 'string' ? dependencies : JSON.stringify(dependencies)) : null;
+  const autoProgressCalculation = req.body.auto_progress_calculation ?? req.body.autoProgressCalculation ?? 0;
+
+  let parentId = null;
+  if (parentRef) {
+    const parentTask = await resolveTenantTask(parentRef, tenantId);
+    if (!parentTask) {
+      return res.status(404).json({ success: false, error: 'Parent task not found' });
+    }
+    parentId = parentTask.id;
+  }
 
   if (!title) {
     return res.status(400).json({ success: false, error: 'title is required' });
@@ -1896,6 +2096,35 @@ async function createTenantTask(req, res) {
       taskColumns.push('live_timer');
       taskValues.push(nowSql);
     }
+    if (await hasColumn('tasks', 'recurrence')) {
+      taskColumns.push('recurrence');
+      taskValues.push(recurrence);
+    }
+    if (await hasColumn('tasks', 'parent_id')) {
+      taskColumns.push('parent_id');
+      taskValues.push(parentId);
+    }
+    if (await hasColumn('tasks', 'checkpoints')) {
+      taskColumns.push('checkpoints');
+      taskValues.push(checkpointsJson);
+    }
+    if (await hasColumn('tasks', 'dependencies')) {
+      taskColumns.push('dependencies');
+      taskValues.push(dependenciesJson);
+    }
+    if (await hasColumn('tasks', 'auto_progress_calculation')) {
+      taskColumns.push('auto_progress_calculation');
+      taskValues.push(autoProgressCalculation ? 1 : 0);
+    }
+    if (await hasColumn('tasks', 'progress')) {
+      let initialProgress = 0;
+      if (autoProgressCalculation && Array.isArray(checkpoints) && checkpoints.length > 0) {
+        const completed = checkpoints.filter(c => c.status === 'COMPLETED').length;
+        initialProgress = Math.round((completed / checkpoints.length) * 100);
+      }
+      taskColumns.push('progress');
+      taskValues.push(initialProgress);
+    }
 
     const taskResult = await qConn(
       connection,
@@ -1913,6 +2142,11 @@ async function createTenantTask(req, res) {
       `UPDATE task_assignment_status SET status = ? WHERE task_id = ? AND tenant_id = ?`,
       [requestedStatus, taskId, tenantId]
     );
+
+    // If it's a child task, recalculate the parent's progress/status
+    if (parentId) {
+      await recalculateTaskProgressAndStatus(connection, parentId, tenantId);
+    }
 
     if (project && project.status === 'PLANNING') {
       await qConn(connection, 'UPDATE projects SET status = ? WHERE id = ? AND tenant_id = ?', ['ACTIVE', project.id, tenantId]);
@@ -1998,6 +2232,12 @@ async function updateTenantTask(req, res) {
     taskUpdates.push('description = ?');
     values.push(req.body.description || null);
   }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'recurrence')) {
+    if (['Individual', 'Daily', 'Weekly', 'Monthly'].includes(req.body.recurrence)) {
+      taskUpdates.push('recurrence = ?');
+      values.push(req.body.recurrence);
+    }
+  }
   if (Object.prototype.hasOwnProperty.call(req.body, 'priority')) {
     taskUpdates.push('priority = ?');
     values.push(normalizeTaskPriority(req.body.priority));
@@ -2056,6 +2296,50 @@ async function updateTenantTask(req, res) {
     values.push(client.id);
   }
 
+  let resolvedParentId = undefined;
+  if (Object.prototype.hasOwnProperty.call(req.body, 'parent_id') || Object.prototype.hasOwnProperty.call(req.body, 'parentId')) {
+    const parentRef = req.body.parent_id ?? req.body.parentId;
+    if (parentRef) {
+      const parentTask = await resolveTenantTask(parentRef, tenantId);
+      if (!parentTask) return res.status(404).json({ success: false, error: 'Parent task not found' });
+      resolvedParentId = parentTask.id;
+    } else {
+      resolvedParentId = null;
+    }
+    taskUpdates.push('parent_id = ?');
+    values.push(resolvedParentId);
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'checkpoints')) {
+    taskUpdates.push('checkpoints = ?');
+    taskUpdates.push('progress = ?');
+    const checkpoints = req.body.checkpoints;
+    const checkpointsJson = checkpoints ? (typeof checkpoints === 'string' ? checkpoints : JSON.stringify(checkpoints)) : null;
+    values.push(checkpointsJson);
+    
+    let newProgress = 0;
+    try {
+      const cpArr = Array.isArray(checkpoints) ? checkpoints : (checkpoints ? JSON.parse(checkpoints) : []);
+      if (cpArr.length > 0) {
+        const completed = cpArr.filter(c => c.status === 'COMPLETED').length;
+        newProgress = Math.round((completed / cpArr.length) * 100);
+      }
+    } catch (e) {}
+    values.push(newProgress);
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'dependencies')) {
+    taskUpdates.push('dependencies = ?');
+    values.push(req.body.dependencies ? (typeof req.body.dependencies === 'string' ? req.body.dependencies : JSON.stringify(req.body.dependencies)) : null);
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'auto_progress_calculation') || Object.prototype.hasOwnProperty.call(req.body, 'autoProgressCalculation')) {
+    const autoProgress = req.body.auto_progress_calculation ?? req.body.autoProgressCalculation;
+    taskUpdates.push('auto_progress_calculation = ?');
+    values.push(autoProgress ? 1 : 0);
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'progress') && !Object.prototype.hasOwnProperty.call(req.body, 'checkpoints')) {
+    taskUpdates.push('progress = ?');
+    values.push(Number(req.body.progress) || 0);
+  }
+
   if (hasAssigneePayload && taskHasAssignedTo) {
     taskUpdates.push('assigned_to = ?');
     values.push(JSON.stringify(assigneeIds));
@@ -2082,6 +2366,11 @@ async function updateTenantTask(req, res) {
       );
     }
 
+    // Recalculate progress/status for this task and any old/new parent tasks
+    await recalculateTaskProgressAndStatus(connection, task.id, tenantId);
+    if (task.parent_id && resolvedParentId !== undefined && task.parent_id !== resolvedParentId) {
+      await recalculateTaskProgressAndStatus(connection, task.parent_id, tenantId);
+    }
 
     if (hasAssigneePayload) {
       // addOnly: preserve existing assignees' status/checklists; only add new users
@@ -2115,6 +2404,64 @@ async function updateTenantTask(req, res) {
     return res.json({
       success: true,
       message: 'Task updated successfully',
+      data: taskResponse
+    });
+  } catch (error) {
+    await rollbackTransactionAsync(connection);
+    throw error;
+  } finally {
+    connection.release();
+  }
+}
+
+async function updateTenantTaskCheckpoints(req, res) {
+  const tenantId = assertTenantId(req);
+  const taskId = req.params.id;
+  const task = await resolveTenantTask(taskId, tenantId);
+  if (!task) {
+    return res.status(404).json({ success: false, error: 'Task not found' });
+  }
+
+  if (!await canWriteTenantTask(task, req)) {
+    return res.status(403).json({ success: false, error: 'You do not have permission to update this task' });
+  }
+
+  const checkpoints = req.body.checkpoints;
+  if (!checkpoints) {
+    return res.status(400).json({ success: false, error: 'checkpoints is required' });
+  }
+
+  const checkpointsJson = typeof checkpoints === 'string' ? checkpoints : JSON.stringify(checkpoints);
+  
+  let newProgress = 0;
+  try {
+    const cpArr = Array.isArray(checkpoints) ? checkpoints : JSON.parse(checkpoints);
+    if (cpArr.length > 0) {
+      const completed = cpArr.filter(c => c.status === 'COMPLETED').length;
+      newProgress = Math.round((completed / cpArr.length) * 100);
+    }
+  } catch (e) {
+    return res.status(400).json({ success: false, error: 'Invalid checkpoints format' });
+  }
+
+  const connection = await getConnectionAsync();
+  try {
+    await beginTransactionAsync(connection);
+
+    await qConn(
+      connection,
+      'UPDATE tasks SET checkpoints = ?, progress = ?, updatedAt = NOW() WHERE id = ?',
+      [checkpointsJson, newProgress, task.id]
+    );
+
+    await recalculateTaskProgressAndStatus(connection, task.id, tenantId);
+
+    await commitTransactionAsync(connection);
+
+    const taskResponse = await loadTenantTaskEnvelope(task.id, tenantId, req);
+    return res.json({
+      success: true,
+      message: 'Checkpoints updated successfully',
       data: taskResponse
     });
   } catch (error) {
@@ -2236,24 +2583,89 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
     try {
       await beginTransactionAsync(connection);
 
+      if (requestedStatus === 'APPROVED' || requestedStatus === 'COMPLETED') {
+        const eligibility = await validateTaskCompletionEligibility(connection, task.id, tenantId);
+        if (!eligibility.eligible) {
+          await rollbackTransactionAsync(connection);
+          connection.release();
+          return res.status(400).json({ success: false, error: eligibility.error });
+        }
+      }
+
       const taskUpdates = ['status = ?', 'stage = ?'];
       const updateValues = [taskStatusToDb(requestedStatus), taskStageToDb(requestedStatus)];
 
       if (taskHasUpdatedAt) { taskUpdates.push('updatedAt = ?'); updateValues.push(nowSql); }
 
-      if (requestedStatus === 'APPROVED') {
+      if (requestedStatus === 'APPROVED' || requestedStatus === 'COMPLETED') {
         if (taskHasApprovedBy) { taskUpdates.push('approved_by = ?'); updateValues.push(req.user._id); }
         if (taskHasApprovedAt) { taskUpdates.push('approved_at = ?'); updateValues.push(nowSql); }
         if (taskHasRejectionReason) taskUpdates.push('rejection_reason = NULL');
         if (taskHasRejectedBy) taskUpdates.push('rejected_by = NULL');
         if (taskHasRejectedAt) taskUpdates.push('rejected_at = NULL');
 
-        // Mark all assignment statuses as COMPLETED (changed from APPROVED as per requirement)
+        // Mark all assignment statuses as COMPLETED
         await qConn(
           connection,
           `UPDATE task_assignment_status SET status = 'COMPLETED', approved_at = ?, review_requested = 0, updated_at = NOW() WHERE task_id = ?`,
           [nowSql, task.id]
         );
+
+        // Auto-spawning next recurrence instance
+        if (task.recurrence && ['Daily', 'Weekly', 'Monthly'].includes(task.recurrence)) {
+          let nextDate = null;
+          const baseDate = task.taskDate ? new Date(task.taskDate) : new Date();
+          const d = new Date(baseDate);
+          if (task.recurrence === 'Daily') {
+            d.setDate(d.getDate() + 1);
+          } else if (task.recurrence === 'Weekly') {
+            d.setDate(d.getDate() + 7);
+          } else if (task.recurrence === 'Monthly') {
+            d.setMonth(d.getMonth() + 1);
+          }
+          nextDate = d;
+          const nextDateSql = toMySQLDate(nextDate);
+          const parentIdForSpawn = task.recurrence_parent_id || task.id;
+
+          const existingSpawns = await qConn(
+            connection,
+            'SELECT id FROM tasks WHERE recurrence_parent_id = ? AND DATE(taskDate) = DATE(?) AND tenant_id = ? LIMIT 1 FOR UPDATE',
+            [parentIdForSpawn, nextDateSql, tenantId]
+          );
+
+          if (existingSpawns.length === 0) {
+            const nextPublicId = buildTaskPublicId();
+            const cols = [
+              'public_id', 'title', 'description', 'priority', 'stage', 'status',
+              'taskDate', 'time_alloted', 'estimated_hours', 'client_id', 'project_id',
+              'project_public_id', 'tenant_id', 'recurrence', 'recurrence_parent_id',
+              'createdAt', 'updatedAt'
+            ];
+            const vals = [
+              nextPublicId, task.title, task.description, task.priority, 'TODO', 'Pending',
+              nextDateSql, task.time_alloted, task.estimated_hours, task.client_id, task.project_id,
+              task.project_public_id, tenantId, task.recurrence, parentIdForSpawn,
+              nowSql, nowSql
+            ];
+
+            const taskResult = await qConn(
+              connection,
+              `INSERT INTO tasks (${cols.join(', ')}) VALUES (${cols.map(() => '?').join(', ')})`,
+              vals
+            );
+            const newTaskId = taskResult.insertId;
+            const assigneeIds = taskAssignees.map(a => a.internalId).filter(Boolean);
+            if (assigneeIds.length > 0) {
+              await syncTenantTaskAssignments(connection, newTaskId, tenantId, assigneeIds);
+              await qConn(
+                connection,
+                `INSERT IGNORE INTO task_assignment_status (task_id, user_id, tenant_id, status)
+                 VALUES ${assigneeIds.map(() => '(?, ?, ?, \'Pending\')').join(', ')}`,
+                assigneeIds.flatMap(uid => [newTaskId, uid, tenantId])
+              );
+            }
+          }
+        }
       }
 
       if (requestedStatus === 'REJECTED') {
@@ -2285,6 +2697,7 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
         taskHasTenantId ? [...updateValues, task.id, tenantId] : [...updateValues, task.id]
       );
 
+      await recalculateTaskProgressAndStatus(connection, task.id, tenantId);
       await commitTransactionAsync(connection);
     } catch (error) {
       await rollbackTransactionAsync(connection);
@@ -2348,6 +2761,16 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
   const connection = await getConnectionAsync();
   try {
     await beginTransactionAsync(connection);
+
+    if (requestedStatus === 'REVIEW') {
+      const eligibility = await validateTaskCompletionEligibility(connection, task.id, tenantId);
+      if (!eligibility.eligible) {
+        await rollbackTransactionAsync(connection);
+        connection.release();
+        return res.status(400).json({ success: false, error: eligibility.error });
+      }
+    }
+
     logger.info('[TASK REVIEW DEBUG] Status change request payload: ' + JSON.stringify({
       taskId: task.id,
       taskPublicId: task.public_id || null,
@@ -2562,6 +2985,7 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
       );
     }
 
+    await recalculateTaskProgressAndStatus(connection, task.id, tenantId);
     await commitTransactionAsync(connection);
 
     if (requestedStatus === 'REVIEW') {
@@ -2790,6 +3214,7 @@ async function deleteTenantTask(req, res) {
           ? (hasTaskUpdatedAt ? [toMySQLDate(new Date()), task.id, tenantId] : [task.id, tenantId])
           : (hasTaskUpdatedAt ? [toMySQLDate(new Date()), task.id] : [task.id])
       );
+      await qConn(connection, 'UPDATE files SET isActive = 0 WHERE task_id = ? AND tenant_id = ?', [task.id, tenantId]);
     } else {
       const hasAssignmentTenantId = await hasColumn('task_assignments', 'tenant_id');
       await qConn(
@@ -2801,6 +3226,25 @@ async function deleteTenantTask(req, res) {
       await qConn(connection, 'DELETE FROM task_time_entries WHERE task_id = ?', [task.id]);
       await qConn(connection, 'DELETE FROM task_logs WHERE task_id = ?', [task.id]);
       await qConn(connection, 'DELETE FROM task_time_entries WHERE task_id = ?', [task.id]);
+
+      const fs = require('fs');
+      const path = require('path');
+      const filesToDelete = await qConn(connection, 'SELECT file_url FROM files WHERE task_id = ? AND tenant_id = ?', [task.id, tenantId]);
+      for (const f of filesToDelete) {
+        if (f.file_url && f.file_url.startsWith('/uploads/')) {
+          const relPath = decodeURIComponent(f.file_url.replace(/^\/uploads\//, ''));
+          const fullPath = path.join(process.cwd(), 'uploads', relPath);
+          try {
+            if (fs.existsSync(fullPath)) {
+              fs.unlinkSync(fullPath);
+            }
+          } catch (e) {
+            logger.warn(`Failed to delete local file: ${fullPath} — ${e.message}`);
+          }
+        }
+      }
+      await qConn(connection, 'DELETE FROM files WHERE task_id = ? AND tenant_id = ?', [task.id, tenantId]);
+
       await qConn(
         connection,
         `DELETE FROM tasks WHERE id = ?${hasTaskTenantId ? ' AND tenant_id = ?' : ''}`,
@@ -3086,6 +3530,7 @@ router.get('/', asyncHandler(listTenantTasks));
 
 router.put('/updatetask/:id', taskLockCheckMiddleware, requireRole(['Admin', 'Manager']), asyncHandler(updateTenantTask));
 router.put('/:id', taskLockCheckMiddleware, requireRole(['Admin', 'Manager']), asyncHandler(updateTenantTask));
+router.put('/:id/checkpoints', taskLockCheckMiddleware, requireRole(['Admin', 'Manager', 'Employee']), asyncHandler(updateTenantTaskCheckpoints));
 
 router.patch('/:id/status', taskLockCheckMiddleware, ruleEngine('task_status_update'), asyncHandler((req, res) => applyTenantTaskStatus(req, res)));
 router.post('/:id/complete', taskLockCheckMiddleware, asyncHandler((req, res) => applyTenantTaskStatus(req, res, 'COMPLETED')));
@@ -3097,6 +3542,7 @@ router.post('/:id/resume', taskLockCheckMiddleware, asyncHandler((req, res) => a
 router.post('/:id/request-review', requireRole(['Employee']), asyncHandler(async (req, res) => applyTenantTaskStatus(req, res, 'REVIEW')));
 router.get('/:id/reassign-candidates', requireRole(['Admin', 'Manager']), asyncHandler(getTenantReassignmentCandidates));
 router.get('/:id/timeline', asyncHandler(getTenantTaskTimeline));
+router.get('/:id/recurrence-history', asyncHandler(getTenantTaskRecurrenceHistory));
 router.delete('/:id', taskLockCheckMiddleware, ruleEngine('task_delete'), requireRole(['Admin', 'Manager']), asyncHandler(deleteTenantTask));
 
 router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
@@ -3207,11 +3653,13 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
       let files = [];
       try {
         files = await new Promise((resolve, reject) => db.query(
-          `SELECT id, task_id, file_url, file_name, file_type, uploaded_at FROM task_documents WHERE task_id IN (?) AND is_active = 1 ORDER BY uploaded_at DESC`,
+          `SELECT f.id, f.task_id, f.file_url, f.file_name, f.file_type, f.uploaded_at, f.source, u.name as uploaded_by_name, u.public_id as uploaded_by_user_id
+           FROM files f
+           LEFT JOIN users u ON f.user_id = u._id
+           WHERE f.task_id IN (?) AND f.isActive = 1 ORDER BY f.uploaded_at DESC`,
           [internalIds], (e, r) => e ? reject(e) : resolve(r)
         ));
       } catch (fileErr) {
-
         files = [];
       }
 
@@ -3220,7 +3668,26 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         if (!f || f.task_id === undefined || f.task_id === null) return;
         const k = String(f.task_id);
         if (!filesMap[k]) filesMap[k] = [];
-        filesMap[k].push({ id: f.id != null ? String(f.id) : null, url: f.file_url || null, name: f.file_name || null, type: f.file_type || null, uploadedAt: f.uploaded_at ? new Date(f.uploaded_at).toISOString() : null });
+        
+        let url = f.file_url || null;
+        if (url && url.startsWith('/uploads/')) {
+          const rel = url.replace(/^\/uploads\//, '');
+          const parts = rel.split('/').map(p => encodeURIComponent(p));
+          url = `${req ? (req.protocol + '://' + req.get('host')) : ''}/uploads/${parts.join('/')}`;
+        }
+        
+        filesMap[k].push({
+          id: f.id != null ? String(f.id) : null,
+          url,
+          name: f.file_name || null,
+          type: f.file_type || null,
+          source: f.source || 'upload',
+          uploadedAt: f.uploaded_at ? new Date(f.uploaded_at).toISOString() : null,
+          uploadedBy: f.uploaded_by_user_id ? {
+            id: f.uploaded_by_user_id,
+            name: f.uploaded_by_name || null
+          } : null
+        });
       });
 
       const checklistMap = {};
@@ -6701,6 +7168,158 @@ router.get('/:taskId/assignments', async (req, res) => {
     `, [taskId, tenantId]);
 
     res.json({ success: true, data: assignments });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+async function getTenantTaskRecurrenceHistory(req, res) {
+  const tenantId = assertTenantId(req);
+  const task = await resolveTenantTask(req.params.id, tenantId, { includeDeleted: true });
+  if (!task) return res.status(404).json({ success: false, error: 'Task not found' });
+
+  const parentId = task.recurrence_parent_id || task.id;
+
+  const rows = await q(
+    `SELECT t.id, t.public_id, t.title, t.status, t.taskDate, t.createdAt, t.completed_at
+     FROM tasks t
+     WHERE (t.id = ? OR t.recurrence_parent_id = ?) AND t.tenant_id = ?
+     ORDER BY t.taskDate DESC, t.createdAt DESC`,
+    [parentId, parentId, tenantId]
+  );
+
+  return res.json({
+    success: true,
+    data: (rows || []).map(r => ({
+      id: r.public_id || String(r.id),
+      internalId: String(r.id),
+      title: r.title,
+      status: r.status,
+      taskDate: r.taskDate ? new Date(r.taskDate).toISOString() : null,
+      createdAt: r.createdAt ? new Date(r.createdAt).toISOString() : null,
+      completedAt: r.completed_at ? new Date(r.completed_at).toISOString() : null
+    }))
+  });
+}
+
+async function ensureTaskCommentsTable() {
+  await q(`
+    CREATE TABLE IF NOT EXISTS task_comments (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      task_id INT NOT NULL,
+      user_id INT NULL,
+      comment TEXT NOT NULL,
+      tenant_id INT DEFAULT NULL,
+      createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_task_comments_task_id (task_id),
+      INDEX idx_task_comments_tenant_id (tenant_id),
+      CONSTRAINT fk_task_comments_task_id FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE,
+      CONSTRAINT fk_task_comments_user_id FOREIGN KEY (user_id) REFERENCES users(_id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+  `);
+}
+
+// Task comments endpoints
+router.get('/:id/comments', async (req, res) => {
+  try {
+    await ensureTaskCommentsTable();
+    const tenantId = req.tenantId;
+    let id = req.params.id;
+    if (req.headers['x-task-public-id']) id = req.headers['x-task-public-id'];
+
+    let taskResult;
+    if (tenantId !== undefined && tenantId !== null) {
+      taskResult = await q('SELECT id FROM tasks WHERE (id = ? OR public_id = CAST(? AS CHAR)) AND tenant_id = ?', [id, id, tenantId]);
+    } else {
+      taskResult = await q('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR) LIMIT 1', [id, id]);
+    }
+    if (!taskResult?.length) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = taskResult[0].id;
+
+    const commentsSql = `
+      SELECT tc.id, tc.id as _id, tc.comment, tc.createdAt, tc.updatedAt, u.name as user_name, u.role as user_role
+      FROM task_comments tc
+      LEFT JOIN users u ON tc.user_id = u._id
+      WHERE tc.task_id = ? ${tenantId !== undefined && tenantId !== null ? 'AND tc.tenant_id = ?' : ''}
+      ORDER BY tc.createdAt ASC
+    `;
+    const commentsParams = (tenantId !== undefined && tenantId !== null) ? [taskId, tenantId] : [taskId];
+    const comments = await q(commentsSql, commentsParams);
+
+    res.json({ success: true, data: comments });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+router.post('/:id/comments', async (req, res) => {
+  try {
+    await ensureTaskCommentsTable();
+    const tenantId = req.tenantId;
+    const { comment } = req.body;
+    if (!comment || typeof comment !== 'string' || !comment.trim()) {
+      return res.status(400).json({ success: false, error: 'Comment text is required' });
+    }
+
+    let id = req.params.id;
+    if (req.headers['x-task-public-id']) id = req.headers['x-task-public-id'];
+
+    let taskResult;
+    if (tenantId !== undefined && tenantId !== null) {
+      taskResult = await q('SELECT id FROM tasks WHERE (id = ? OR public_id = CAST(? AS CHAR)) AND tenant_id = ?', [id, id, tenantId]);
+    } else {
+      taskResult = await q('SELECT id FROM tasks WHERE id = ? OR public_id = CAST(? AS CHAR) LIMIT 1', [id, id]);
+    }
+    if (!taskResult?.length) return res.status(404).json({ success: false, error: 'Task not found' });
+    const taskId = taskResult[0].id;
+    const userId = req.user._id;
+
+    const tenantParam = (tenantId !== undefined && tenantId !== null) ? tenantId : null;
+    const result = await q(`
+      INSERT INTO task_comments (task_id, user_id, comment, tenant_id)
+      VALUES (?, ?, ?, ?)
+    `, [taskId, userId, comment.trim(), tenantParam]);
+
+    const insertId = result.insertId;
+
+    const newCommentRows = await q(`
+      SELECT tc.id, tc.id as _id, tc.comment, tc.createdAt, tc.updatedAt, u.name as user_name, u.role as user_role
+      FROM task_comments tc
+      LEFT JOIN users u ON tc.user_id = u._id
+      WHERE tc.id = ?
+    `, [insertId]);
+
+    res.json({ success: true, data: newCommentRows[0] });
+  } catch (e) {
+    res.status(500).json({ success: false, error: e.message });
+  }
+});
+
+router.delete('/:id/comments/:commentId', async (req, res) => {
+  try {
+    await ensureTaskCommentsTable();
+    const tenantId = req.tenantId;
+    const commentId = req.params.commentId;
+
+    const commentSelectSql = tenantId !== undefined && tenantId !== null
+      ? 'SELECT * FROM task_comments WHERE id = ? AND tenant_id = ?'
+      : 'SELECT * FROM task_comments WHERE id = ?';
+    const commentSelectParams = tenantId !== undefined && tenantId !== null ? [commentId, tenantId] : [commentId];
+    const commentRows = await q(commentSelectSql, commentSelectParams);
+    if (commentRows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Comment not found' });
+    }
+    const comment = commentRows[0];
+    const isAdmin = isTenantAdminRole(req.user.role);
+    const isAuthor = String(comment.user_id) === String(req.user._id);
+
+    if (!isAdmin && !isAuthor) {
+      return res.status(403).json({ success: false, error: 'Unauthorized to delete this comment' });
+    }
+
+    await q('DELETE FROM task_comments WHERE id = ?', [commentId]);
+    res.json({ success: true, message: 'Comment deleted successfully' });
   } catch (e) {
     res.status(500).json({ success: false, error: e.message });
   }

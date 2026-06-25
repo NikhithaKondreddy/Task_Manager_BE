@@ -466,7 +466,6 @@ const ticketRoutes = require(__root + 'modules/tickets/routes/ticketRoutes');
 
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
 const auth = require('./middleware/auth');
-
 // Consolidate mounting at both /api/path and /path
 app.use(['/api/auth', '/auth'], AuthController);
 app.use(['/api/super-admin', '/super-admin'], superAdminRoutes);

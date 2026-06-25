@@ -49,7 +49,7 @@ const MODULE_ROUTE_MAP = {
     'Departments':      '/manager/departments'
   },
   Employee: {
-    'Dashboard':        '/employee/dashboard',
+    'Dashboard':        '/user/dashboard',
     'Projects':         '/employee/projects',
     'Tasks':            '/employee/tasks'
   },

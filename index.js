@@ -50,10 +50,25 @@ async function start() {
     notificationCleanupService.start();
   });
 
-  process.on('SIGINT', async () => {
+  const shutdown = async (signal) => {
+    logger.info(`Received ${signal}. Shutting down server...`);
     try { if (redis) await redis.quit(); } catch (e) {}
-    server.close(() => process.exit(0));
-  });
+    
+    // Force exit after a short timeout so keep-alive connections don't block nodemon
+    setTimeout(() => {
+      logger.info('Force exiting backend process');
+      process.exit(0);
+    }, 1000).unref();
+
+    server.close(() => {
+      logger.info('Server closed cleanly');
+      process.exit(0);
+    });
+  };
+
+  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGUSR2', () => shutdown('SIGUSR2'));
 }
 
 start();

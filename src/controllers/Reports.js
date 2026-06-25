@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const logger = require(__root + 'logger');
-const { generateProjectReport, projectLookupDiagnostic } = require(__root + 'services/reportService');
+const { generateProjectReport, projectLookupDiagnostic, getExtendedDashboardMetrics } = require(__root + 'services/reportService');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
 const db = require(__root + 'db');
 
@@ -256,13 +256,24 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
       };
     });
 
+    const extendedMetrics = await getExtendedDashboardMetrics(req.user.tenant_id, {
+      userId: isEmployee ? employeeId : null
+    }).catch(() => ({}));
+
     return res.json({
       success: true, data: {
         summary: { tasksCreated, tasksCompleted, hoursLogged, activeProjects },
-        taskStatus,
-        userProductivity,
+        taskStatus: {
+          ...taskStatus,
+          pending: extendedMetrics.pendingTasks || taskStatus.pending || 0,
+          inProgress: extendedMetrics.inProgressTasks || taskStatus.inProgress || 0,
+          completed: extendedMetrics.completedTasks || taskStatus.completed || 0,
+          overdue: extendedMetrics.overdueTasks || taskStatus.overdue || 0
+        },
+        userProductivity: extendedMetrics.userWiseTaskPerformance || userProductivity,
         clientSummary,
-        dateRange: { startDate: startStr, endDate: endStr }
+        dateRange: { startDate: startStr, endDate: endStr },
+        ...extendedMetrics
       }
     });
   } catch (err) {
