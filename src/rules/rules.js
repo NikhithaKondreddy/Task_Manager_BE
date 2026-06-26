@@ -107,8 +107,7 @@ const rules = [
       userRole: 'MANAGER',
       action: 'POST__TASKS_CREATEJSON',
       payload: {
-        title: { $exists: true },
-        projectId: { $exists: true }
+        title: { $exists: true }
       }
     },
     action: 'ALLOW',

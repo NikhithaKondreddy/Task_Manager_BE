@@ -33,6 +33,8 @@ const toMySQLDate = (d) => {
 };
 const NotificationService = require(__root + 'services/notificationService');
 const workflowService = require(__root + 'workflow/workflowService');
+const OccurrenceService = require(__root + 'services/occurrenceService');
+const escalationService = require(__root + 'services/escalationService');
 const errorResponse = require(__root + 'utils/errorResponse');
 const { check } = require('express-validator');
 const validateRequest = require(__root + 'middleware/validateRequest');
@@ -1603,17 +1605,7 @@ async function sendTenantTaskNotifications(userIds, title, message, type, entity
   }
 }
 
-async function listTenantTasks(req, res) {
-  const tenantId = assertTenantId(req);
-  const page = parsePositiveInt(req.query.page, 1);
-  const limit = Math.min(parsePositiveInt(req.query.limit, 20), 100);
-  const offset = (page - 1) * limit;
-  const filters = { ...req.query };
-
-  if (req.path === '/gettaskss' && !filters.assignee_id && filters.userId) {
-    filters.assignee_id = filters.userId;
-  }
-
+async function buildTaskScopeQuery(req, tenantId, filters) {
   const hasTaskTenantId = await hasColumn('tasks', 'tenant_id');
   const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
   const hasAssignmentTenantId = await hasColumn('task_assignments', 'tenant_id');
@@ -1630,31 +1622,40 @@ async function listTenantTasks(req, res) {
   }
 
   const projectRef = filters.project_id || filters.projectId || filters.projectPublicId;
-  let project = null;
   if (projectRef) {
-    project = await resolveTenantProject(projectRef, tenantId);
-    if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
-    where.push('t.project_id = ?');
-    params.push(project.id);
+    const project = await resolveTenantProject(projectRef, tenantId);
+    if (project) {
+      where.push('t.project_id = ?');
+      params.push(project.id);
+    } else {
+      where.push('1 = 0');
+    }
   }
 
   const clientRef = filters.client_id || filters.clientId;
   if (clientRef) {
     const client = await resolveTenantClient(clientRef, tenantId);
-    if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
-    where.push('t.client_id = ?');
-    params.push(client.id);
+    if (client) {
+      where.push('t.client_id = ?');
+      params.push(client.id);
+    } else {
+      where.push('1 = 0');
+    }
   }
 
-  if (filters.status) {
-    const requestedStatuses = String(filters.status)
-      .split(',')
-      .map((item) => normalizeTaskLifecycleStatus(item))
-      .filter(Boolean);
+  if (filters.status && filters.status !== 'All') {
+    if (String(filters.status).toUpperCase() === 'OVERDUE') {
+      where.push("UPPER(COALESCE(t.status, '')) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') AND (t.dueDate < NOW() OR t.taskDate < CURDATE())");
+    } else {
+      const requestedStatuses = String(filters.status)
+        .split(',')
+        .map((item) => normalizeTaskLifecycleStatus(item))
+        .filter(Boolean);
 
-    if (requestedStatuses.length > 0) {
-      where.push(`UPPER(REPLACE(REPLACE(COALESCE(t.status, ''), ' ', '_'), '-', '_')) IN (${requestedStatuses.map(() => '?').join(', ')})`);
-      params.push(...requestedStatuses);
+      if (requestedStatuses.length > 0) {
+        where.push(`UPPER(REPLACE(REPLACE(COALESCE(t.status, ''), ' ', '_'), '-', '_')) IN (${requestedStatuses.map(() => '?').join(', ')})`);
+        params.push(...requestedStatuses);
+      }
     }
   }
 
@@ -1677,30 +1678,143 @@ async function listTenantTasks(req, res) {
     params.push(req.user._id);
     if (hasAssignmentTenantId) params.push(tenantId);
   } else if (isClientLikeRole(req.user.role) && !canManageTenantTasks(req.user.role) && !isAuditRole(req.user.role)) {
-    return res.status(403).json({ success: false, error: 'Clients do not have task list access without a mapped client scope' });
+    where.push('1 = 0');
   }
 
   const assigneeRef = filters.assignee_id || filters.assigneeId;
   if (assigneeRef && !isClientLikeRole(req.user.role)) {
     const assignee = await resolveTenantUser(assigneeRef, tenantId);
-    if (!assignee) return res.status(404).json({ success: false, error: 'Assignee not found' });
-    where.push(`EXISTS (
-      SELECT 1
-      FROM task_assignments ta_filter
-      WHERE ta_filter.task_id = t.id
-        AND ta_filter.user_id = ?
-        ${hasAssignmentTenantId ? 'AND ta_filter.tenant_id = ?' : ''}
-    )`);
-    params.push(assignee._id);
-    if (hasAssignmentTenantId) params.push(tenantId);
+    if (assignee) {
+      where.push(`EXISTS (
+        SELECT 1
+        FROM task_assignments ta_filter
+        WHERE ta_filter.task_id = t.id
+          AND ta_filter.user_id = ?
+          ${hasAssignmentTenantId ? 'AND ta_filter.tenant_id = ?' : ''}
+      )`);
+      params.push(assignee._id);
+      if (hasAssignmentTenantId) params.push(tenantId);
+    } else {
+      where.push('1 = 0');
+    }
   }
 
-  const whereSql = where.join(' AND ');
+  if (filters.taskType && filters.taskType !== 'All' && filters.taskType !== 'All Tasks') {
+    const tt = filters.taskType.toLowerCase();
+    if (tt === 'project tasks' || tt === 'project') {
+      where.push("t.task_type = 'Project'");
+    } else if (tt === 'individual tasks' || tt === 'individual') {
+      where.push("t.task_type = 'Individual'");
+    } else if (tt === 'daily tasks' || tt === 'daily') {
+      where.push("t.recurrence = 'Daily'");
+    } else if (tt === 'weekly tasks' || tt === 'weekly') {
+      where.push("t.recurrence = 'Weekly'");
+    } else if (tt === 'monthly tasks' || tt === 'monthly') {
+      where.push("t.recurrence = 'Monthly'");
+    }
+  }
+
+  if (filters.priority && filters.priority !== 'all' && filters.priority !== 'All') {
+    where.push("UPPER(COALESCE(t.priority, 'MEDIUM')) = ?");
+    params.push(filters.priority.toUpperCase());
+  }
+
+  const dateFilter = filters.dateFilter;
+  if (dateFilter && dateFilter !== 'all') {
+    if (dateFilter === 'today') {
+      where.push('DATE(COALESCE(t.taskDate, t.dueDate)) = CURDATE()');
+    } else if (dateFilter === 'this_week') {
+      where.push('YEARWEEK(COALESCE(t.taskDate, t.dueDate), 1) = YEARWEEK(CURDATE(), 1)');
+    } else if (dateFilter === 'this_month') {
+      where.push('YEAR(COALESCE(t.taskDate, t.dueDate)) = YEAR(CURDATE()) AND MONTH(COALESCE(t.taskDate, t.dueDate)) = MONTH(CURDATE())');
+    } else if (dateFilter === 'custom' && filters.dateFrom && filters.dateTo) {
+      where.push('DATE(COALESCE(t.taskDate, t.dueDate)) BETWEEN ? AND ?');
+      params.push(filters.dateFrom, filters.dateTo);
+    }
+  }
+
+  return { whereSql: where.join(' AND '), params };
+}
+
+async function getDashboardSummary(req, res) {
+  const tenantId = assertTenantId(req);
+  const filters = { ...req.query };
+
+  const baseFilters = { ...filters };
+  delete baseFilters.status;
+  delete baseFilters.taskType;
+
+  const { whereSql: baseWhere, params: baseParams } = await buildTaskScopeQuery(req, tenantId, baseFilters);
+
+  const statsQuery = `
+    SELECT
+      COUNT(*) AS totalTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'PENDING' THEN 1 ELSE 0 END) AS openTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'IN_PROGRESS' THEN 1 ELSE 0 END) AS inProgressTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'REVIEW' THEN 1 ELSE 0 END) AS reviewTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'COMPLETED' THEN 1 ELSE 0 END) AS completedTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'ON_HOLD' THEN 1 ELSE 0 END) AS onHoldTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') AND (t.dueDate < NOW() OR t.taskDate < CURDATE()) THEN 1 ELSE 0 END) AS overdueTasks,
+      SUM(CASE WHEN LOWER(t.task_type) = 'individual' THEN 1 ELSE 0 END) AS individualTasks,
+      SUM(CASE WHEN LOWER(t.task_type) = 'project' THEN 1 ELSE 0 END) AS projectTasks,
+      SUM(CASE WHEN t.recurrence IN ('Daily', 'Weekly', 'Monthly') THEN 1 ELSE 0 END) AS recurringTasks,
+      SUM(CASE WHEN t.recurrence = 'Daily' THEN 1 ELSE 0 END) AS dailyTasks,
+      SUM(CASE WHEN t.recurrence = 'Weekly' THEN 1 ELSE 0 END) AS weeklyTasks,
+      SUM(CASE WHEN t.recurrence = 'Monthly' THEN 1 ELSE 0 END) AS monthlyTasks
+    FROM tasks t
+    WHERE ${baseWhere}
+  `;
+
+  try {
+    const rows = await q(statsQuery, baseParams);
+    const result = rows && rows[0] ? rows[0] : {};
+
+    return res.json({
+      success: true,
+      data: {
+        totalTasks: Number(result.totalTasks || 0),
+        openTasks: Number(result.openTasks || 0),
+        inProgressTasks: Number(result.inProgressTasks || 0),
+        reviewTasks: Number(result.reviewTasks || 0),
+        completedTasks: Number(result.completedTasks || 0),
+        onHoldTasks: Number(result.onHoldTasks || 0),
+        overdueTasks: Number(result.overdueTasks || 0),
+        individualTasks: Number(result.individualTasks || 0),
+        projectTasks: Number(result.projectTasks || 0),
+        recurringTasks: Number(result.recurringTasks || 0),
+        dailyTasks: Number(result.dailyTasks || 0),
+        weeklyTasks: Number(result.weeklyTasks || 0),
+        monthlyTasks: Number(result.monthlyTasks || 0)
+      }
+    });
+  } catch (error) {
+    logger.error('Error fetching dashboard summary: ' + error.message);
+    return res.status(500).json({ success: false, error: error.message });
+  }
+}
+
+async function listTenantTasks(req, res) {
+  const tenantId = assertTenantId(req);
+  const page = parsePositiveInt(req.query.page, 1);
+  const limit = Math.min(parsePositiveInt(req.query.limit, 10), 100);
+  const offset = (page - 1) * limit;
+  const filters = { ...req.query };
+  const projectRef = filters.project_id || filters.projectId || filters.projectPublicId || null;
+  const project = projectRef ? await resolveTenantProject(projectRef, tenantId) : null;
+
+  if (req.path === '/gettaskss' && !filters.assignee_id && filters.userId) {
+    filters.assignee_id = filters.userId;
+  }
+
+  const { whereSql, params } = await buildTaskScopeQuery(req, tenantId, filters);
+
   const countRows = await q(`SELECT COUNT(*) AS total FROM tasks t WHERE ${whereSql}`, params);
   const total = Number((countRows && countRows[0] && countRows[0].total) || 0);
 
   const hasClientPublic = await hasColumn('clients', 'public_id');
   const hasProjectPublic = await hasColumn('projects', 'public_id');
+  const hasAssignmentTenantId = await hasColumn('task_assignments', 'tenant_id');
+  const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
 
   const dataRows = await q(
     `
@@ -1730,6 +1844,12 @@ async function listTenantTasks(req, res) {
       total,
       totalPages: limit > 0 ? Math.ceil(total / limit) : 0
     };
+    const pagination = {
+      page,
+      limit,
+      totalRecords: total,
+      totalPages: limit > 0 ? Math.ceil(total / limit) : 0
+    };
 
     const wantKanban = req.query && (req.query.kanban === '1' || req.query.kanban === 'true' || req.query.kanban === 'yes');
     const kanban = { TODO: [], INPROGRESS: [], ONHOLD: [], REVIEW: [], COMPLETED: [] };
@@ -1753,7 +1873,7 @@ async function listTenantTasks(req, res) {
     });
 
     // Include `kanban` ONLY for EMPLOYEE role
-    let response = { success: true, data: tasks, meta };
+    let response = { success: true, data: tasks, meta, pagination };
     if (req.user.role === "EMPLOYEE") {
         response.kanban = kanban;
     }
@@ -1922,6 +2042,12 @@ async function listTenantTasks(req, res) {
     total,
     totalPages: limit > 0 ? Math.ceil(total / limit) : 0
   };
+  const pagination = {
+    page,
+    limit,
+    totalRecords: total,
+    totalPages: limit > 0 ? Math.ceil(total / limit) : 0
+  };
 
   const wantKanban = req.query && (req.query.kanban === '1' || req.query.kanban === 'true' || req.query.kanban === 'yes');
   const kanban = { TODO: [], INPROGRESS: [], ONHOLD: [], REVIEW: [], COMPLETED: [] };
@@ -1946,7 +2072,7 @@ async function listTenantTasks(req, res) {
 
   // Include `kanban` ONLY for EMPLOYEE role
   const messages = canRequestClosure ? ["All tasks completed"] : [];
-  let response = { success: true, data: shapedTasks, meta, messages };
+  let response = { success: true, data: shapedTasks, meta, pagination, messages };
   if (req.user.role === "EMPLOYEE") {
       response.kanban = kanban;
   }
@@ -2021,6 +2147,10 @@ async function createTenantTask(req, res) {
     return res.status(400).json({ success: false, error: 'At least one assignee is required' });
   }
 
+  const taskType = ['Project', 'Individual'].includes(req.body.task_type || req.body.taskType)
+    ? (req.body.task_type || req.body.taskType)
+    : 'Project';
+
   const project = projectRef ? await resolveTenantProject(projectRef, tenantId) : null;
   if (projectRef && !project) {
     return res.status(404).json({ success: false, error: 'Project not found' });
@@ -2036,7 +2166,7 @@ async function createTenantTask(req, res) {
   if (!client && project && project.client_id) {
     client = await resolveTenantClient(project.client_id, tenantId);
   }
-  if (!client) {
+  if (taskType === 'Project' && !client) {
     return res.status(400).json({ success: false, error: 'client_id or a project with a valid client is required' });
   }
   if (project && client && String(project.client_id) !== String(client.id)) {
@@ -2053,7 +2183,7 @@ async function createTenantTask(req, res) {
   try {
     await beginTransactionAsync(connection);
 
-    const taskColumns = ['public_id', 'title', 'description', 'priority', 'stage', 'status', 'taskDate', 'time_alloted', 'createdAt', 'updatedAt', 'client_id'];
+    const taskColumns = ['public_id', 'title', 'description', 'priority', 'stage', 'status', 'taskDate', 'time_alloted', 'createdAt', 'updatedAt'];
     const taskValues = [
       taskPublicId,
       title,
@@ -2064,9 +2194,17 @@ async function createTenantTask(req, res) {
       toMySQLDate(dueDate),
       timeAlloted,
       nowSql,
-      nowSql,
-      client.id
+      nowSql
     ];
+
+    if (client) {
+      taskColumns.push('client_id');
+      taskValues.push(client.id);
+    }
+    if (await hasColumn('tasks', 'task_type')) {
+      taskColumns.push('task_type');
+      taskValues.push(taskType);
+    }
 
     if (await hasColumn('tasks', 'estimated_hours')) {
       taskColumns.push('estimated_hours');
@@ -2267,33 +2405,59 @@ async function updateTenantTask(req, res) {
     values.push(taskStageToDb(normalizedStatus));
   }
 
-  const projectRef = req.body.project_id || req.body.projectId || req.body.projectPublicId;
-  let project = null;
-  if (projectRef !== undefined && projectRef !== null && projectRef !== '') {
-    project = await resolveTenantProject(projectRef, tenantId);
-    if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
-    await ensureProjectOpen(project.id);
-    if (taskHasProjectId) {
-      taskUpdates.push('project_id = ?');
-      values.push(project.id);
-    }
-    if (taskHasProjectPublicId) {
-      taskUpdates.push('project_public_id = ?');
-      values.push(project.public_id || null);
+  if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.prototype.hasOwnProperty.call(req.body, 'projectId')) {
+    const projectRefVal = req.body.project_id ?? req.body.projectId;
+    if (projectRefVal === null || projectRefVal === '') {
+      if (taskHasProjectId) {
+        taskUpdates.push('project_id = ?');
+        values.push(null);
+      }
+      if (taskHasProjectPublicId) {
+        taskUpdates.push('project_public_id = ?');
+        values.push(null);
+      }
+    } else {
+      project = await resolveTenantProject(projectRefVal, tenantId);
+      if (!project) return res.status(404).json({ success: false, error: 'Project not found' });
+      await ensureProjectOpen(project.id);
+      if (taskHasProjectId) {
+        taskUpdates.push('project_id = ?');
+        values.push(project.id);
+      }
+      if (taskHasProjectPublicId) {
+        taskUpdates.push('project_public_id = ?');
+        values.push(project.public_id || null);
+      }
     }
   }
 
-  const clientRef = req.body.client_id || req.body.clientId;
-  let client = null;
-  if (clientRef !== undefined && clientRef !== null && clientRef !== '') {
-    client = await resolveTenantClient(clientRef, tenantId);
-    if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
+  if (Object.prototype.hasOwnProperty.call(req.body, 'client_id') || Object.prototype.hasOwnProperty.call(req.body, 'clientId')) {
+    const clientRefVal = req.body.client_id ?? req.body.clientId;
+    if (clientRefVal === null || clientRefVal === '') {
+      taskUpdates.push('client_id = ?');
+      values.push(null);
+    } else {
+      client = await resolveTenantClient(clientRefVal, tenantId);
+      if (!client) return res.status(404).json({ success: false, error: 'Client not found' });
+      taskUpdates.push('client_id = ?');
+      values.push(client.id);
+    }
   } else if (project && project.client_id) {
     client = await resolveTenantClient(project.client_id, tenantId);
+    if (client) {
+      taskUpdates.push('client_id = ?');
+      values.push(client.id);
+    }
   }
-  if (client) {
-    taskUpdates.push('client_id = ?');
-    values.push(client.id);
+
+  if (Object.prototype.hasOwnProperty.call(req.body, 'task_type') || Object.prototype.hasOwnProperty.call(req.body, 'taskType')) {
+    const taskTypeVal = req.body.task_type ?? req.body.taskType;
+    if (['Project', 'Individual'].includes(taskTypeVal)) {
+      if (await hasColumn('tasks', 'task_type')) {
+        taskUpdates.push('task_type = ?');
+        values.push(taskTypeVal);
+      }
+    }
   }
 
   let resolvedParentId = undefined;
@@ -2987,6 +3151,20 @@ async function applyTenantTaskStatus(req, res, statusOverride) {
 
     await recalculateTaskProgressAndStatus(connection, task.id, tenantId);
     await commitTransactionAsync(connection);
+    // Record an occurrence when a task reaches APPROVED or COMPLETED
+    (async () => {
+      try {
+        if (requestedStatus === 'APPROVED' || requestedStatus === 'COMPLETED') {
+          const occDate = task.taskDate || new Date();
+          const occ = await OccurrenceService.createOccurrence({ taskId: task.id, occurrenceDate: occDate, tenantId, createdBy: req.user._id });
+          if (occ && occ.id) {
+            try { await OccurrenceService.markOccurrenceCompleted(occ.id, req.user._id, tenantId); } catch (e) { /* non-fatal */ }
+          }
+        }
+      } catch (e) {
+        logger.warn('Failed to record task occurrence: ' + (e && e.message ? e.message : String(e)));
+      }
+    })();
 
     if (requestedStatus === 'REVIEW') {
       await NotificationService.createAndSendToRoles(
@@ -3071,6 +3249,24 @@ async function getTenantTaskTimeline(req, res) {
       logs,
       activities
     }
+  });
+}
+
+async function getTenantTaskEscalationHistory(req, res) {
+  const tenantId = assertTenantId(req);
+  const task = await resolveTenantTask(req.params.id, tenantId, { includeDeleted: true });
+  if (!task) {
+    return res.status(404).json({ success: false, error: 'Task not found' });
+  }
+
+  if (!await canReadTenantTask(task, req)) {
+    return res.status(403).json({ success: false, error: 'You do not have access to this task' });
+  }
+
+  const history = await escalationService.getTaskEscalationHistory(task.id, tenantId);
+  return res.json({
+    success: true,
+    history: history || []
   });
 }
 
@@ -3306,6 +3502,31 @@ const q = (sql, params = []) => new Promise((resolve, reject) => {
   });
 });
 
+async function ensureTaskIndexes() {
+  const indexes = [
+    { name: 'idx_tasks_status', sql: 'CREATE INDEX idx_tasks_status ON tasks(status)' },
+    { name: 'idx_tasks_tenant_status', sql: 'CREATE INDEX idx_tasks_tenant_status ON tasks(tenant_id, status)' },
+    { name: 'idx_tasks_priority', sql: 'CREATE INDEX idx_tasks_priority ON tasks(priority)' },
+    { name: 'idx_tasks_task_type', sql: 'CREATE INDEX idx_tasks_task_type ON tasks(task_type)' },
+    { name: 'idx_tasks_recurrence', sql: 'CREATE INDEX idx_tasks_recurrence ON tasks(recurrence)' },
+    { name: 'idx_tasks_tenant_created', sql: 'CREATE INDEX idx_tasks_tenant_created ON tasks(tenant_id, createdAt DESC)' },
+    { name: 'idx_tasks_project_tenant', sql: 'CREATE INDEX idx_tasks_project_tenant ON tasks(project_id, tenant_id)' },
+    { name: 'idx_tasks_due_date', sql: 'CREATE INDEX idx_tasks_due_date ON tasks(taskDate)' }
+  ];
+  for (const idx of indexes) {
+    try {
+      await q(idx.sql);
+    } catch (err) {
+      if (err.errno === 1061 || err.code === 'ER_DUP_KEYNAME') {
+        // Index already exists, safe to ignore
+      } else {
+        logger.warn(`Failed to create index ${idx.name}: ${err.message}`);
+      }
+    }
+  }
+}
+ensureTaskIndexes();
+
 // Safe email send: validate, ensure recipient exists in users table, send and log failures.
 async function safeSendEmailForTask(taskId, recipientEmail, emailPayload) {
   try {
@@ -3525,6 +3746,7 @@ router.post('/', [
 
 router.get('/taskdropdown', asyncHandler(getTenantTaskDropdown));
 router.get('/taskdropdownfortaskHrs', asyncHandler(getTenantTaskHourDropdown));
+router.get('/dashboard-summary', asyncHandler(getDashboardSummary));
 router.get('/gettaskss', asyncHandler(listTenantTasks));
 router.get('/', asyncHandler(listTenantTasks));
 
@@ -3543,6 +3765,7 @@ router.post('/:id/request-review', requireRole(['Employee']), asyncHandler(async
 router.get('/:id/reassign-candidates', requireRole(['Admin', 'Manager']), asyncHandler(getTenantReassignmentCandidates));
 router.get('/:id/timeline', asyncHandler(getTenantTaskTimeline));
 router.get('/:id/recurrence-history', asyncHandler(getTenantTaskRecurrenceHistory));
+router.get('/:id/escalation-history', requireRole(['Admin', 'Manager', 'Employee']), asyncHandler(getTenantTaskEscalationHistory));
 router.delete('/:id', taskLockCheckMiddleware, ruleEngine('task_delete'), requireRole(['Admin', 'Manager']), asyncHandler(deleteTenantTask));
 
 router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {

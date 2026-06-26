@@ -152,7 +152,8 @@ async function ensureTenantColumns() {
     'client_contacts',
     'client_viewers',
     'project_departments',
-    'files'
+    'files',
+    'task_escalations'
   ];
 
   for (const tableName of tenantTables) {
@@ -246,6 +247,49 @@ async function ensureCoreTables() {
       CONSTRAINT fk_admin_modules_user FOREIGN KEY (admin_id) REFERENCES users(_id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
   `);
+
+  // Create task_occurrences table to store generated occurrences, photos and independent status
+  await q(`
+    CREATE TABLE IF NOT EXISTS task_occurrences (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      task_id INT NOT NULL,
+      occurrence_date DATE NOT NULL,
+      status VARCHAR(50) NOT NULL DEFAULT 'Pending',
+      completed_at DATETIME NULL,
+      remarks TEXT NULL,
+      photo_path VARCHAR(1024) NULL,
+      created_by INT NULL,
+      tenant_id INT NULL,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_task_occurrence_task_date (task_id, occurrence_date),
+      INDEX idx_task_occurrences_task (task_id),
+      INDEX idx_task_occurrences_tenant (tenant_id),
+      CONSTRAINT fk_task_occurrences_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
+
+  // Ensure reminder_sent column exists for task_occurrences (backfill safe)
+  await ensureColumn('task_occurrences', 'reminder_sent TINYINT(1) DEFAULT 0');
+  await ensureIndex('task_occurrences', 'idx_task_occurrences_reminder_sent', 'INDEX idx_task_occurrences_reminder_sent (reminder_sent)');
+
+  // Create task_escalations table to store escalation history
+  await q(`
+    CREATE TABLE IF NOT EXISTS task_escalations (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      task_id INT NOT NULL,
+      escalated_by VARCHAR(255) NULL,
+      escalated_to VARCHAR(255) NULL,
+      escalation_level INT NOT NULL DEFAULT 1,
+      reason TEXT NULL,
+      comments TEXT NULL,
+      escalated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+      INDEX idx_task_escalations_task (task_id),
+      CONSTRAINT fk_task_escalations_task FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+  `);
 }
 
 async function ensureAuditLogShape() {
@@ -319,12 +363,27 @@ async function ensureSoftDeleteColumns() {
     await ensureColumn('tasks', "recurrence ENUM('Individual', 'Daily', 'Weekly', 'Monthly') NOT NULL DEFAULT 'Individual'");
     await ensureColumn('tasks', 'recurrence_parent_id INT NULL');
 
+    // Recurrence scheduling and reminders
+    await ensureColumn('tasks', 'start_date DATETIME NULL');
+    await ensureColumn('tasks', 'end_date DATETIME NULL');
+    await ensureColumn('tasks', 'day_of_week TINYINT NULL');
+    await ensureColumn('tasks', 'day_of_month TINYINT NULL');
+    await ensureColumn('tasks', 'next_due_date DATETIME NULL');
+    await ensureColumn('tasks', 'reminder_enabled TINYINT(1) DEFAULT 0');
+    await ensureColumn('tasks', 'reminder_time TIME NULL');
+    await ensureColumn('tasks', 'reminder_offset_days INT DEFAULT 0');
+    await ensureColumn('tasks', 'allow_photo_upload TINYINT(1) DEFAULT 0');
+    await ensureColumn('tasks', "task_type VARCHAR(50) NOT NULL DEFAULT 'Project'");
+    await ensureIndex('tasks', 'idx_tasks_task_type', 'INDEX idx_tasks_task_type (task_type)');
+
     // High performance indexes
     await ensureIndex('tasks', 'idx_tasks_status', 'INDEX idx_tasks_status (status)');
     await ensureIndex('tasks', 'idx_tasks_taskDate', 'INDEX idx_tasks_taskDate (taskDate)');
     await ensureIndex('tasks', 'idx_tasks_parent_id', 'INDEX idx_tasks_parent_id (parent_id)');
     await ensureIndex('tasks', 'idx_tasks_recurrence_parent_id', 'INDEX idx_tasks_recurrence_parent_id (recurrence_parent_id)');
     await ensureIndex('tasks', 'idx_tasks_createdAt', 'INDEX idx_tasks_createdAt (createdAt)');
+    await ensureIndex('tasks', 'idx_tasks_next_due_date', 'INDEX idx_tasks_next_due_date (next_due_date)');
+    await ensureIndex('tasks', 'idx_tasks_reminder_enabled', 'INDEX idx_tasks_reminder_enabled (reminder_enabled)');
     
     if (await tableExists('files')) {
       await ensureIndex('files', 'idx_files_task_id', 'INDEX idx_files_task_id (task_id)');

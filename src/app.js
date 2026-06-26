@@ -53,6 +53,17 @@ const bootstrapPromise = bootstrapService.ensureBootstrap()
     logger.error('Application bootstrap unexpected error: ' + (error && error.message ? error.message : String(error)));
   });
 
+// Start recurrence scheduler after bootstrap completes
+bootstrapPromise.then(() => {
+  try {
+    const recurrenceScheduler = require(__root + 'services/recurrenceScheduler');
+    if (recurrenceScheduler && typeof recurrenceScheduler.start === 'function') recurrenceScheduler.start();
+    logger.info('Recurrence scheduler initialized');
+  } catch (e) {
+    logger.warn('Failed to initialize recurrence scheduler: ' + (e && e.message ? e.message : String(e)));
+  }
+}).catch(() => {});
+
 server.bootstrapReady = bootstrapPromise;
 
 app.disable('x-powered-by');
@@ -451,6 +462,7 @@ const auditRoutes = require(__root + 'routes/auditRoutes');
 const StaffUser = require(__root + 'controllers/User');
 const tasksCRUD = require(__root + 'controllers/Tasks');
 const uploadCRUD = require(__root + 'controllers/Uploads');
+const taskOccurrences = require(__root + 'controllers/TaskOccurrences');
 const clientRoutes = require(__root + 'routes/clientRoutes');
 const adminRoutes = require(__root + 'routes/adminRoutes');
 const superAdminRoutes = require(__root + 'routes/superAdminRoutes');
@@ -488,6 +500,7 @@ app.use(['/api/workflow', '/workflow'], workflowRoutes);
 app.use(['/api/reports', '/reports'], reportRoutes);
 app.use(['/api/tickets', '/tickets'], auth, ticketRoutes);
 app.use(['/api/docs', '/docs'], express.static(path.join(__dirname, '..', 'docs')));
+app.use(['/api/occurrences', '/occurrences'], taskOccurrences);
 
 const AdminController = require(__root + 'controllers/adminController');
 app.get(['/api/platform/settings', '/platform/settings'], AdminController.getSettings);
