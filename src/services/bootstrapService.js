@@ -376,6 +376,18 @@ async function ensureSoftDeleteColumns() {
     await ensureColumn('tasks', "task_type VARCHAR(50) NOT NULL DEFAULT 'Project'");
     await ensureIndex('tasks', 'idx_tasks_task_type', 'INDEX idx_tasks_task_type (task_type)');
 
+    // Overdue notification tracking
+    await ensureColumn('tasks', 'overdue_notified_at DATETIME NULL');
+    await ensureIndex('tasks', 'idx_tasks_overdue_notified_at', 'INDEX idx_tasks_overdue_notified_at (overdue_notified_at)');
+
+    // Recurring Activity (e.g. Gemba Walk) configuration
+    await ensureColumn('tasks', 'category VARCHAR(50) NULL');
+    await ensureColumn('tasks', 'mandatory_photo TINYINT(1) DEFAULT 0');
+    await ensureColumn('tasks', 'mandatory_checklist TINYINT(1) DEFAULT 0');
+    await ensureColumn('tasks', 'mandatory_remarks TINYINT(1) DEFAULT 0');
+    await ensureColumn('tasks', 'due_time TIME NULL');
+    await ensureIndex('tasks', 'idx_tasks_category', 'INDEX idx_tasks_category (category)');
+
     // High performance indexes
     await ensureIndex('tasks', 'idx_tasks_status', 'INDEX idx_tasks_status (status)');
     await ensureIndex('tasks', 'idx_tasks_taskDate', 'INDEX idx_tasks_taskDate (taskDate)');
@@ -388,6 +400,20 @@ async function ensureSoftDeleteColumns() {
     if (await tableExists('files')) {
       await ensureIndex('files', 'idx_files_task_id', 'INDEX idx_files_task_id (task_id)');
     }
+  }
+}
+
+async function ensureOccurrenceColumns() {
+  if (await tableExists('task_occurrences')) {
+    await ensureColumn('task_occurrences', 'checklist JSON NULL');
+    await ensureColumn('task_occurrences', 'latitude DECIMAL(10,7) NULL');
+    await ensureColumn('task_occurrences', 'longitude DECIMAL(10,7) NULL');
+    await ensureColumn('task_occurrences', 'location_name VARCHAR(255) NULL');
+    await ensureColumn('task_occurrences', 'overdue_notified_at DATETIME NULL');
+  }
+  if (await tableExists('files')) {
+    await ensureColumn('files', 'occurrence_id INT NULL');
+    await ensureIndex('files', 'idx_files_occurrence_id', 'INDEX idx_files_occurrence_id (occurrence_id)');
   }
 }
 
@@ -410,6 +436,7 @@ async function retryBootstrapInBackground() {
       await ensureCoreTables();
       await ensureSettingsShape();
       await ensureSoftDeleteColumns();
+      await ensureOccurrenceColumns();
       await ensureTenantColumns();
       await ensureAuditLogShape();
       // Upgrade default tenant public_id from legacy 'tenant_default' to a real UUID
@@ -449,6 +476,7 @@ async function ensureBootstrap() {
       await ensureCoreTables();
       await ensureSettingsShape();
       await ensureSoftDeleteColumns();
+      await ensureOccurrenceColumns();
       await ensureTenantColumns();
       await ensureAuditLogShape();
       // Upgrade default tenant public_id from legacy 'tenant_default' to a real UUID

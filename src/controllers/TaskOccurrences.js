@@ -12,6 +12,12 @@ const OccurrenceService = require(__root + 'services/occurrenceService');
 
 router.use(requireAuth);
 
+const isSupportedPhoto = (file) => {
+  const type = String(file?.mimetype || '').toLowerCase();
+  const name = String(file?.originalname || '').toLowerCase();
+  return ['image/jpeg', 'image/jpg', 'image/png'].includes(type) || /\.(jpe?g|png)$/.test(name);
+};
+
 async function query(sql, params = []) {
   return new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
 }
@@ -19,8 +25,9 @@ async function query(sql, params = []) {
 router.get('/tasks/:taskId', async (req, res) => {
   try {
     const tenantId = assertTenantId(req);
-    const { taskId } = req.params;
-    const rows = await OccurrenceService.getOccurrencesForTask(taskId, tenantId);
+    const internalTaskId = await OccurrenceService.resolveTaskInternalId(req.params.taskId, tenantId);
+    if (!internalTaskId) return res.status(404).json({ success: false, error: 'Task not found' });
+    const rows = await OccurrenceService.getOccurrencesForTask(internalTaskId, tenantId);
     return res.json({ success: true, data: rows });
   } catch (error) {
     logger.error('GET occurrences error:', error);
@@ -31,9 +38,10 @@ router.get('/tasks/:taskId', async (req, res) => {
 router.post('/tasks/:taskId', requireRole(['Admin','Manager','Employee']), async (req, res) => {
   try {
     const tenantId = assertTenantId(req);
-    const { taskId } = req.params;
+    const internalTaskId = await OccurrenceService.resolveTaskInternalId(req.params.taskId, tenantId);
+    if (!internalTaskId) return res.status(404).json({ success: false, error: 'Task not found' });
     const date = req.body.date || new Date();
-    const occ = await OccurrenceService.createOccurrence({ taskId: Number(taskId), occurrenceDate: date, tenantId, createdBy: req.user._id });
+    const occ = await OccurrenceService.createOccurrence({ taskId: internalTaskId, occurrenceDate: date, tenantId, createdBy: req.user._id });
     return res.status(201).json({ success: true, data: occ });
   } catch (error) {
     logger.error('Create occurrence error:', error);
@@ -41,22 +49,59 @@ router.post('/tasks/:taskId', requireRole(['Admin','Manager','Employee']), async
   }
 });
 
-router.post('/:occurrenceId/photo', requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
+// Single enriched occurrence - used for Manager review (task title, assignees, checklist, photos)
+router.get('/:occurrenceId', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
   try {
     const tenantId = assertTenantId(req);
     const { occurrenceId } = req.params;
-    if (!req.file) return res.status(400).json({ success: false, error: 'No file uploaded' });
+    const detail = await OccurrenceService.getOccurrenceDetail(Number(occurrenceId), tenantId);
+    if (!detail) return res.status(404).json({ success: false, error: 'Occurrence not found' });
+    return res.json({ success: true, data: detail });
+  } catch (error) {
+    logger.error('Get occurrence detail error:', error);
+    return res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
 
-    // ensure directory
+router.put('/:occurrenceId/checklist', requireRole(['Admin', 'Manager', 'Employee']), async (req, res) => {
+  try {
+    const tenantId = assertTenantId(req);
+    const { occurrenceId } = req.params;
+    const checklist = Array.isArray(req.body.checklist) ? req.body.checklist : [];
+    const updated = await OccurrenceService.updateOccurrenceChecklist(Number(occurrenceId), checklist, tenantId);
+    return res.json({ success: true, data: updated });
+  } catch (error) {
+    logger.error('Update occurrence checklist error:', error);
+    return res.status(500).json({ success: false, error: 'Internal Server Error' });
+  }
+});
+
+// Accepts multiple photos in one request (field name "files", up to 10).
+router.post('/:occurrenceId/photo', requireRole(['Admin','Manager','Employee']), upload.array('files', 10), async (req, res) => {
+  try {
+    const tenantId = assertTenantId(req);
+    const { occurrenceId } = req.params;
+    if (!req.files || req.files.length === 0) return res.status(400).json({ success: false, error: 'No file uploaded' });
+    if (req.files.some((file) => !isSupportedPhoto(file))) {
+      return res.status(400).json({ success: false, error: 'Only JPG, JPEG, and PNG photos are supported' });
+    }
+
     const uploadsDir = path.join(process.cwd(), 'uploads', 'occurrences');
     try { fs.mkdirSync(uploadsDir, { recursive: true }); } catch (e) {}
 
-    const safe = upload.safeFilename(req.file.originalname || 'upload');
-    const dest = path.join(uploadsDir, safe);
-    fs.writeFileSync(dest, req.file.buffer);
-    const storedPath = '/uploads/occurrences/' + encodeURIComponent(safe);
+    const photos = req.files.map((file) => {
+      const safe = upload.safeFilename(file.originalname || 'upload');
+      const dest = path.join(uploadsDir, safe);
+      fs.writeFileSync(dest, file.buffer);
+      return {
+        storedPath: '/uploads/occurrences/' + encodeURIComponent(safe),
+        fileName: file.originalname,
+        fileType: file.mimetype,
+        fileSize: file.size,
+      };
+    });
 
-    const updated = await OccurrenceService.attachPhotoToOccurrence(Number(occurrenceId), storedPath, req.file.originalname, req.file.mimetype, req.file.size, req.user._id, tenantId);
+    const updated = await OccurrenceService.attachPhotosToOccurrence(Number(occurrenceId), photos, req.user._id, tenantId);
     return res.status(200).json({ success: true, data: updated });
   } catch (error) {
     logger.error('Attach photo error:', error && error.stack ? error.stack : error);
@@ -68,7 +113,14 @@ router.post('/:occurrenceId/complete', requireRole(['Admin','Manager','Employee'
   try {
     const tenantId = assertTenantId(req);
     const { occurrenceId } = req.params;
-    await OccurrenceService.markOccurrenceCompleted(Number(occurrenceId), req.user._id, tenantId);
+    const { remarks, latitude, longitude, locationName } = req.body || {};
+
+    const eligibility = await OccurrenceService.validateOccurrenceCompletion(Number(occurrenceId), { remarks });
+    if (!eligibility.eligible) {
+      return res.status(400).json({ success: false, error: eligibility.error });
+    }
+
+    await OccurrenceService.markOccurrenceCompleted(Number(occurrenceId), req.user._id, tenantId, { remarks, latitude, longitude, locationName });
     const out = await query('SELECT * FROM task_occurrences WHERE id = ? LIMIT 1', [occurrenceId]);
     return res.json({ success: true, data: out && out.length ? out[0] : null });
   } catch (error) {

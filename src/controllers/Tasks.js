@@ -979,10 +979,31 @@ function filterTaskResponseForRole(taskData, req) {
   };
 }
 
-function formatTenantTask(task, assignees, tenantId) {
+// Latest occurrence status per task, batched to avoid N+1 queries.
+// occurrenceStatus only ever applies to standalone Individual tasks (no project) - see formatTenantTask.
+async function getLatestOccurrenceStatusMap(taskIds, tenantId) {
+  if (!Array.isArray(taskIds) || taskIds.length === 0) return {};
+  const hasOccurrenceTenantId = await hasColumn('task_occurrences', 'tenant_id');
+  const rows = await q(
+    `SELECT task_id, status FROM task_occurrences
+     WHERE task_id IN (?) ${hasOccurrenceTenantId ? 'AND (tenant_id = ? OR tenant_id IS NULL)' : ''}
+     ORDER BY occurrence_date DESC, id DESC`,
+    hasOccurrenceTenantId ? [taskIds, tenantId] : [taskIds]
+  );
+  const map = {};
+  (rows || []).forEach((row) => {
+    const key = String(row.task_id);
+    if (!map[key]) map[key] = row.status ? String(row.status).toUpperCase() : null;
+  });
+  return map;
+}
+
+function formatTenantTask(task, assignees, tenantId, occurrenceStatus = null) {
   const derivedGlobalStatus = deriveGlobalStatus(assignees);
   const totalSeconds = Number(task.total_duration || 0);
-  return {
+  const projectName = task.project_name || task.projectName || task.project_title || null;
+  const projectPublicId = task.project_public_id || task.projectPublicId || null;
+  const formatted = {
     id: task.public_id || String(task.id),
     internalId: String(task.id),
     title: task.title || null,
@@ -1012,10 +1033,16 @@ function formatTenantTask(task, assignees, tenantId) {
       name: task.client_name || null
     } : null,
     project: task.project_id ? {
-      id: task.project_public_id || String(task.project_id),
+      id: projectPublicId || String(task.project_id),
       internalId: String(task.project_id),
-      name: task.project_name || null
+      name: projectName
     } : null,
+    projectId: projectPublicId || (task.project_id ? String(task.project_id) : null),
+    project_id: task.project_id || null,
+    projectPublicId,
+    project_public_id: projectPublicId,
+    projectName,
+    project_name: projectName,
     assignees,
     global_status: derivedGlobalStatus,
 
@@ -1028,8 +1055,31 @@ function formatTenantTask(task, assignees, tenantId) {
     progress: task.progress != null ? Number(task.progress) : 0,
     auto_progress_calculation: task.auto_progress_calculation != null ? Boolean(task.auto_progress_calculation) : false,
     recurrence: task.recurrence || 'Individual',
-    recurrence_parent_id: task.recurrence_parent_id || null
+    recurrence_parent_id: task.recurrence_parent_id || null,
+    task_type: task.task_type || (task.project_id ? 'Project' : 'Individual'),
+    category: task.category || null,
+    due_time: task.due_time || null,
+    allow_photo_upload: Boolean(task.allow_photo_upload),
+    allowPhotoUpload: Boolean(task.allow_photo_upload),
+    mandatory_photo: Boolean(task.mandatory_photo),
+    mandatoryPhoto: Boolean(task.mandatory_photo),
+    mandatory_checklist: Boolean(task.mandatory_checklist),
+    mandatory_remarks: Boolean(task.mandatory_remarks),
+    start_date: toIsoOrNull(task.start_date),
+    end_date: toIsoOrNull(task.end_date),
+    day_of_week: task.day_of_week != null ? Number(task.day_of_week) : null,
+    day_of_month: task.day_of_month != null ? Number(task.day_of_month) : null,
+    reminder_enabled: Boolean(task.reminder_enabled),
+    reminder_time: task.reminder_time || null
   };
+
+  // occurrenceStatus only applies to standalone Individual tasks (no project association).
+  // Project tasks never receive this field, even when their recurrence is "Individual".
+  if (!task.project_id) {
+    formatted.occurrenceStatus = occurrenceStatus;
+  }
+
+  return formatted;
 }
 
 async function loadTaskChecklistSubtaskIds(connection, taskId) {
@@ -1199,7 +1249,7 @@ async function resolveTenantTask(identifier, tenantId, options = {}) {
 async function validateTaskCompletionEligibility(connection, taskId, tenantId) {
   const rows = await qConn(
     connection,
-    'SELECT id, checkpoints, parent_id FROM tasks WHERE id = ?',
+    'SELECT id, checkpoints, parent_id, mandatory_photo, allow_photo_upload FROM tasks WHERE id = ?',
     [taskId]
   );
   if (!rows || rows.length === 0) return { eligible: true };
@@ -1220,6 +1270,17 @@ async function validateTaskCompletionEligibility(connection, taskId, tenantId) {
     const incompleteMandatory = checkpoints.filter(c => c.mandatory && c.status !== 'COMPLETED');
     if (incompleteMandatory.length > 0) {
       return { eligible: false, error: 'Cannot complete task: mandatory checkpoints are incomplete' };
+    }
+  }
+
+  if (task.mandatory_photo || task.allow_photo_upload) {
+    const fileRows = await qConn(
+      connection,
+      'SELECT COUNT(*) AS count FROM files WHERE task_id = ? AND isActive = 1',
+      [taskId]
+    );
+    if (!fileRows || !fileRows[0] || Number(fileRows[0].count || 0) === 0) {
+      return { eligible: false, error: 'Photo upload is mandatory before completing this task.' };
     }
   }
 
@@ -1552,7 +1613,12 @@ async function loadTenantTaskForResponse(taskId, tenantId, req = null) {
     [taskId], (err, rows) => err ? reject(err) : resolve(rows)
   )).catch(() => []);
 
-  const formatted = formatTenantTask(rows[0], assignees, tenantId);
+  let occurrenceStatus = null;
+  if (!rows[0].project_id) {
+    const occurrenceStatusMap = await getLatestOccurrenceStatusMap([taskId], tenantId);
+    occurrenceStatus = occurrenceStatusMap[String(taskId)] || null;
+  }
+  const formatted = formatTenantTask(rows[0], assignees, tenantId, occurrenceStatus);
 
   const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
   logger.info(`loadTenantTaskForResponse: taskId=${taskId}, hasTaskDeleted=${hasTaskDeleted}`);
@@ -1619,6 +1685,13 @@ async function buildTaskScopeQuery(req, tenantId, filters) {
 
   if (hasTaskDeleted && !(filters.includeDeleted === '1' || filters.includeDeleted === 'true')) {
     where.push('(t.isDeleted IS NULL OR t.isDeleted != 1)');
+  }
+
+  if (filters.category) {
+    where.push('t.category = ?');
+    params.push(filters.category);
+  } else if (filters.hasCategory === '1' || filters.hasCategory === 'true') {
+    where.push('t.category IS NOT NULL');
   }
 
   const projectRef = filters.project_id || filters.projectId || filters.projectPublicId;
@@ -1765,9 +1838,49 @@ async function getDashboardSummary(req, res) {
     WHERE ${baseWhere}
   `;
 
+  const recurringActivityQuery = `
+    SELECT
+      COUNT(*) AS recurringActivitiesToday,
+      SUM(CASE WHEN UPPER(COALESCE(o.status, '')) = 'PENDING' THEN 1 ELSE 0 END) AS recurringActivitiesPendingToday,
+      SUM(CASE WHEN UPPER(COALESCE(o.status, '')) = 'COMPLETED' THEN 1 ELSE 0 END) AS recurringActivitiesCompletedToday,
+      SUM(CASE WHEN UPPER(COALESCE(o.status, '')) = 'PENDING' AND t.due_time IS NOT NULL AND CURTIME() > t.due_time THEN 1 ELSE 0 END) AS recurringActivitiesOverdueToday
+    FROM task_occurrences o
+    INNER JOIN tasks t ON t.id = o.task_id
+    WHERE t.category IS NOT NULL AND o.occurrence_date = CURDATE() AND ${baseWhere}
+  `;
+
   try {
     const rows = await q(statsQuery, baseParams);
     const result = rows && rows[0] ? rows[0] : {};
+
+    const recurringRows = await q(recurringActivityQuery, baseParams).catch(() => []);
+    const recurringResult = recurringRows && recurringRows[0] ? recurringRows[0] : {};
+
+    let employeeCompletion = undefined;
+    if (['Manager', 'Admin', 'SuperAdmin'].includes(req.user.role)) {
+      employeeCompletion = await q(
+        `
+          SELECT u.public_id AS employeeId, u.name AS employeeName,
+                 COUNT(*) AS totalOccurrences,
+                 SUM(CASE WHEN UPPER(o.status) = 'COMPLETED' THEN 1 ELSE 0 END) AS completedOccurrences
+          FROM task_occurrences o
+          INNER JOIN tasks t ON t.id = o.task_id
+          INNER JOIN task_assignments ta ON ta.task_id = t.id
+          INNER JOIN users u ON u._id = ta.user_id
+          WHERE t.category IS NOT NULL AND t.tenant_id = ?
+          GROUP BY u._id
+          ORDER BY u.name ASC
+        `,
+        [tenantId]
+      ).catch(() => []);
+      employeeCompletion = (employeeCompletion || []).map((row) => ({
+        employeeId: row.employeeId,
+        employeeName: row.employeeName,
+        totalOccurrences: Number(row.totalOccurrences || 0),
+        completedOccurrences: Number(row.completedOccurrences || 0),
+        completionPercent: row.totalOccurrences > 0 ? Math.round((row.completedOccurrences / row.totalOccurrences) * 100) : 0,
+      }));
+    }
 
     return res.json({
       success: true,
@@ -1784,7 +1897,12 @@ async function getDashboardSummary(req, res) {
         recurringTasks: Number(result.recurringTasks || 0),
         dailyTasks: Number(result.dailyTasks || 0),
         weeklyTasks: Number(result.weeklyTasks || 0),
-        monthlyTasks: Number(result.monthlyTasks || 0)
+        monthlyTasks: Number(result.monthlyTasks || 0),
+        recurringActivitiesToday: Number(recurringResult.recurringActivitiesToday || 0),
+        recurringActivitiesPendingToday: Number(recurringResult.recurringActivitiesPendingToday || 0),
+        recurringActivitiesCompletedToday: Number(recurringResult.recurringActivitiesCompletedToday || 0),
+        recurringActivitiesOverdueToday: Number(recurringResult.recurringActivitiesOverdueToday || 0),
+        ...(employeeCompletion !== undefined ? { recurringActivityEmployeeCompletion: employeeCompletion } : {})
       }
     });
   } catch (error) {
@@ -1990,6 +2108,9 @@ async function listTenantTasks(req, res) {
     canRequestClosure = nonCompletedCount === 0 && ['Manager', 'Admin', 'SuperAdmin'].includes(req.user.role);
   }
 
+  const standaloneTaskIds = (dataRows || []).filter((row) => !row.project_id).map((row) => row.id);
+  const occurrenceStatusMap = await getLatestOccurrenceStatusMap(standaloneTaskIds, tenantId);
+
   const shapedTasks = (dataRows || []).map((row) => {
     const taskKey = String(row.id);
     const latestRequest = latestReassignmentByTask[taskKey] || null;
@@ -2013,7 +2134,7 @@ async function listTenantTasks(req, res) {
     const permissions = buildReassignmentPermissions(req, reassignmentDetails);
 
     const shapedTask = filterTaskResponseForRole(
-      formatTenantTask(row, assignmentMap[taskKey] || [], tenantId),
+      formatTenantTask(row, assignmentMap[taskKey] || [], tenantId, occurrenceStatusMap[taskKey] || null),
       req
     );
 
@@ -2238,6 +2359,58 @@ async function createTenantTask(req, res) {
       taskColumns.push('recurrence');
       taskValues.push(recurrence);
     }
+    if (await hasColumn('tasks', 'start_date') && req.body.start_date) {
+      taskColumns.push('start_date');
+      taskValues.push(toMySQLDate(req.body.start_date));
+    }
+    if (await hasColumn('tasks', 'end_date') && req.body.end_date) {
+      taskColumns.push('end_date');
+      taskValues.push(toMySQLDate(req.body.end_date));
+    }
+    if (await hasColumn('tasks', 'day_of_week') && req.body.day_of_week !== undefined && req.body.day_of_week !== '') {
+      taskColumns.push('day_of_week');
+      taskValues.push(Number(req.body.day_of_week));
+    }
+    if (await hasColumn('tasks', 'day_of_month') && req.body.day_of_month !== undefined && req.body.day_of_month !== '') {
+      taskColumns.push('day_of_month');
+      taskValues.push(Number(req.body.day_of_month));
+    }
+    if (await hasColumn('tasks', 'reminder_enabled')) {
+      taskColumns.push('reminder_enabled');
+      taskValues.push(req.body.reminder_enabled ? 1 : 0);
+    }
+    if (await hasColumn('tasks', 'reminder_time') && req.body.reminder_time) {
+      taskColumns.push('reminder_time');
+      taskValues.push(req.body.reminder_time);
+    }
+    if (await hasColumn('tasks', 'reminder_offset_days') && req.body.reminder_offset_days !== undefined) {
+      taskColumns.push('reminder_offset_days');
+      taskValues.push(Number(req.body.reminder_offset_days) || 0);
+    }
+    if (await hasColumn('tasks', 'allow_photo_upload')) {
+      taskColumns.push('allow_photo_upload');
+      taskValues.push(req.body.allow_photo_upload ? 1 : 0);
+    }
+    if (await hasColumn('tasks', 'category') && req.body.category) {
+      taskColumns.push('category');
+      taskValues.push(String(req.body.category).slice(0, 50));
+    }
+    if (await hasColumn('tasks', 'mandatory_photo')) {
+      taskColumns.push('mandatory_photo');
+      taskValues.push(req.body.mandatory_photo ? 1 : 0);
+    }
+    if (await hasColumn('tasks', 'mandatory_checklist')) {
+      taskColumns.push('mandatory_checklist');
+      taskValues.push(req.body.mandatory_checklist ? 1 : 0);
+    }
+    if (await hasColumn('tasks', 'mandatory_remarks')) {
+      taskColumns.push('mandatory_remarks');
+      taskValues.push(req.body.mandatory_remarks ? 1 : 0);
+    }
+    if (await hasColumn('tasks', 'due_time') && req.body.due_time) {
+      taskColumns.push('due_time');
+      taskValues.push(req.body.due_time);
+    }
     if (await hasColumn('tasks', 'parent_id')) {
       taskColumns.push('parent_id');
       taskValues.push(parentId);
@@ -2383,6 +2556,8 @@ async function updateTenantTask(req, res) {
   if (Object.prototype.hasOwnProperty.call(req.body, 'taskDate') || Object.prototype.hasOwnProperty.call(req.body, 'dueDate')) {
     taskUpdates.push('taskDate = ?');
     values.push(toMySQLDate(req.body.taskDate || req.body.dueDate || null));
+    // Deadline changed - allow the overdue scheduler to re-evaluate and notify again if needed
+    taskUpdates.push('overdue_notified_at = NULL');
   }
   if (Object.prototype.hasOwnProperty.call(req.body, 'time_alloted') ||
       Object.prototype.hasOwnProperty.call(req.body, 'timeAlloted') ||
@@ -2405,7 +2580,19 @@ async function updateTenantTask(req, res) {
     values.push(taskStageToDb(normalizedStatus));
   }
 
-  if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.prototype.hasOwnProperty.call(req.body, 'projectId')) {
+  if (Object.prototype.hasOwnProperty.call(req.body, 'allow_photo_upload') || Object.prototype.hasOwnProperty.call(req.body, 'allowPhotoUpload')) {
+    if (await hasColumn('tasks', 'allow_photo_upload')) {
+      taskUpdates.push('allow_photo_upload = ?');
+      values.push((req.body.allow_photo_upload ?? req.body.allowPhotoUpload) ? 1 : 0);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'mandatory_photo') || Object.prototype.hasOwnProperty.call(req.body, 'mandatoryPhoto')) {
+    if (await hasColumn('tasks', 'mandatory_photo')) {
+      taskUpdates.push('mandatory_photo = ?');
+      values.push((req.body.mandatory_photo ?? req.body.mandatoryPhoto) ? 1 : 0);
+    }
+  }
+if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.prototype.hasOwnProperty.call(req.body, 'projectId')) {
     const projectRefVal = req.body.project_id ?? req.body.projectId;
     if (projectRefVal === null || projectRefVal === '') {
       if (taskHasProjectId) {

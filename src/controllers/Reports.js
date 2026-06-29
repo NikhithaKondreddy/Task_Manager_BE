@@ -1,9 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const logger = require(__root + 'logger');
-const { generateProjectReport, projectLookupDiagnostic, getExtendedDashboardMetrics } = require(__root + 'services/reportService');
+const { generateProjectReport, projectLookupDiagnostic, getExtendedDashboardMetrics, getRecurringActivityReport } = require(__root + 'services/reportService');
 const { requireAuth, requireRole } = require(__root + 'middleware/roles');
+const { assertTenantId } = require(__root + 'utils/tenantScope');
 const db = require(__root + 'db');
+const ExcelJS = require('exceljs');
 
 function q(sql, params = []) {
   return new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
@@ -279,5 +281,59 @@ router.get('/overview', requireRole(['Admin', 'Manager', 'Employee']), async (re
   } catch (err) {
     logger.error('Reports overview error:', err && err.stack ? err.stack : err);
     return res.status(500).json({ success: false, message: 'Failed to generate overview', error: err && err.message });
+  }
+});
+
+function buildRecurringActivityFilters(req) {
+  return {
+    employeeId: req.query.employeeId || req.query.employee_id || null,
+    startDate: req.query.startDate || req.query.start_date || null,
+    endDate: req.query.endDate || req.query.end_date || null,
+    taskId: req.query.taskId || req.query.task_id || null,
+    departmentId: req.query.departmentId || req.query.department_id || null,
+    status: req.query.status || null,
+    recurrence: req.query.recurrence || null,
+  };
+}
+
+router.get('/recurring-activities', requireRole(['Admin', 'Manager']), async (req, res) => {
+  try {
+    const tenantId = assertTenantId(req);
+    const rows = await getRecurringActivityReport(tenantId, buildRecurringActivityFilters(req));
+    return res.json({ success: true, data: rows });
+  } catch (err) {
+    logger.error('Recurring activity report error:', err && err.stack ? err.stack : err);
+    return res.status(500).json({ success: false, message: 'Failed to generate report', error: err && err.message });
+  }
+});
+
+router.get('/recurring-activities/export.xlsx', requireRole(['Admin', 'Manager']), async (req, res) => {
+  try {
+    const tenantId = assertTenantId(req);
+    const rows = await getRecurringActivityReport(tenantId, buildRecurringActivityFilters(req));
+
+    const workbook = new ExcelJS.Workbook();
+    const sheet = workbook.addWorksheet('Recurring Activities');
+    sheet.columns = [
+      { header: 'Date', key: 'occurrenceDate', width: 14 },
+      { header: 'Activity', key: 'taskName', width: 28 },
+      { header: 'Category', key: 'category', width: 18 },
+      { header: 'Recurrence', key: 'recurrence', width: 12 },
+      { header: 'Employee(s)', key: 'employeeNames', width: 24 },
+      { header: 'Department(s)', key: 'departmentNames', width: 22 },
+      { header: 'Status', key: 'status', width: 14 },
+      { header: 'Completed At', key: 'completedAt', width: 20 },
+      { header: 'Remarks', key: 'remarks', width: 40 },
+    ];
+    sheet.getRow(1).font = { bold: true };
+    rows.forEach((row) => sheet.addRow(row));
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="recurring-activities-${Date.now()}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    logger.error('Recurring activity export error:', err && err.stack ? err.stack : err);
+    return res.status(500).json({ success: false, message: 'Failed to export report', error: err && err.message });
   }
 });

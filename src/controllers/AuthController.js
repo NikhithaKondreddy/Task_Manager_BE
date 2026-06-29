@@ -299,9 +299,9 @@ function getDefaultModules(role) {
     mk('Rules Engine', 'full'),
     mk('IT_SUPPORT_MANAGEMENT', 'full')
   ];
-  if (role === 'Admin') return [mk('User Management', 'full'), mk('Dashboard', 'full'), mk('Clients', 'full'), mk('Departments', 'full'), mk('Tasks', 'full'), mk('Projects', 'full'), mk('Workflow (Project & Task Flow)', 'full'), mk('Notifications', 'full'), mk('Reports & Analytics', 'full'), mk('Document & File Management', 'full'), mk('Chat / Real-Time Collaboration', 'full'), mk('Settings & Master Configuration', 'full')];
-  if (role === 'Manager') return [mk('User Management', 'view'), mk('Dashboard', 'full'), mk('Clients', 'full'), mk('Departments', 'view'), mk('Tasks', 'full'), mk('Projects', 'full'), mk('Workflow (Project & Task Flow)', 'full'), mk('Notifications', 'limited'), mk('Reports & Analytics', 'full'), mk('Document & File Management', 'limited'), mk('Chat / Real-Time Collaboration', 'full'), mk('Approval Workflows', 'limited')];
-  if (role === 'Employee') return [mk('Dashboard', 'view'), mk('Tasks', 'limited'), mk('Notifications', 'limited'), mk('Reports & Analytics', 'limited'), mk('Document & File Management', 'limited'), mk('Chat / Real-Time Collaboration', 'full')];
+  if (role === 'Admin') return [mk('User Management', 'full'), mk('Dashboard', 'full'), mk('Clients', 'full'), mk('Departments', 'full'), mk('Tasks', 'full'), mk('Projects', 'full'), mk('Recurring Activity', 'full'), mk('Workflow (Project & Task Flow)', 'full'), mk('Notifications', 'full'), mk('Reports & Analytics', 'full'), mk('Document & File Management', 'full'), mk('Chat / Real-Time Collaboration', 'full'), mk('Settings & Master Configuration', 'full')];
+  if (role === 'Manager') return [mk('User Management', 'view'), mk('Dashboard', 'full'), mk('Clients', 'full'), mk('Departments', 'view'), mk('Tasks', 'full'), mk('Projects', 'full'), mk('Recurring Activity', 'full'), mk('Workflow (Project & Task Flow)', 'full'), mk('Notifications', 'limited'), mk('Reports & Analytics', 'full'), mk('Document & File Management', 'limited'), mk('Chat / Real-Time Collaboration', 'full'), mk('Approval Workflows', 'limited')];
+  if (role === 'Employee') return [mk('Dashboard', 'view'), mk('Tasks', 'limited'), mk('Recurring Activity', 'limited'), mk('Notifications', 'limited'), mk('Reports & Analytics', 'limited'), mk('Document & File Management', 'limited'), mk('Chat / Real-Time Collaboration', 'full')];
   if (role === 'Client-Viewer') return [mk('Dashboard', 'view'), mk('Document & File Management', 'view')];
   if (role === 'IT Support') return [
     mk('IT Support Dashboard', 'full'),
@@ -315,7 +315,7 @@ function getDefaultModules(role) {
   return [];
 }
 
-const SIDEBAR_ORDER = ['Dashboard', 'User Management', 'Tenant Management', 'Clients', 'Departments', 'Tasks', 'Projects', 'Workflow (Project & Task Flow)', 'Approval Workflows', 'Notifications', 'Reports & Analytics', 'Document & File Management', 'Chat / Real-Time Collaboration', 'Audit Logs', 'Settings & Master Configuration', 'Platform Settings', 'Rules Engine'];
+const SIDEBAR_ORDER = ['Dashboard', 'User Management', 'Tenant Management', 'Clients', 'Departments', 'Tasks', 'Projects', 'Recurring Activity', 'Workflow (Project & Task Flow)', 'Approval Workflows', 'Notifications', 'Reports & Analytics', 'Document & File Management', 'Chat / Real-Time Collaboration', 'Audit Logs', 'Settings & Master Configuration', 'Platform Settings', 'Rules Engine'];
 
 function reorderModules(modules) {
   if (!modules || !modules.length) return [];

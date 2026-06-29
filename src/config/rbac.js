@@ -49,6 +49,7 @@ const DEFAULT_ROLE_PERMISSIONS = {
     clients: { read: true, create: true, update: true, archive: true, delete: true },
     projects: { read: true, create: true, update: true, archive: true, delete: true },
     tasks: { read: true, create: true, update: true, assign: true, approve: true, reject: true, delete: true },
+    recurringActivity: { read: true, create: true, update: true, complete: true, export: true, delete: true },
     documents: { read: true, upload: true, delete: true },
     notifications: { read: true, send: true },
     reports: { read: true },
@@ -75,6 +76,7 @@ const DEFAULT_ROLE_PERMISSIONS = {
     clients: { read: true, create: true, update: true, archive: true },
     projects: { read: true, create: true, update: true, delete: false },
     tasks: { read: true, create: true, update: true, assign: true, approve: true, reject: true, delete: true },
+    recurringActivity: { read: true, create: true, update: true, complete: true, export: true, delete: true },
     documents: { read: true, upload: true, delete: true },
     notifications: { read: true, send: true },
     reports: { read: true },
@@ -86,6 +88,7 @@ const DEFAULT_ROLE_PERMISSIONS = {
   EMPLOYEE: {
     dashboard: { read: true },
     tasks: { read: true, update: true, status: true, complete: true },
+    recurringActivity: { read: true, complete: true },
     projects: { read: true },
     clients: { read: true },
     documents: { read: true, upload: true },

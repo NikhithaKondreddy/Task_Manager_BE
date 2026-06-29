@@ -456,4 +456,63 @@ async function getExtendedDashboardMetrics(tenantId, options = {}) {
   };
 }
 
-module.exports = { generateProjectReport, projectLookupDiagnostic, getExtendedDashboardMetrics };
+/**
+ * Filterable report over task_occurrences for recurring activities (e.g. Gemba Walk).
+ * Filters: employeeId, startDate, endDate, taskId, departmentId, status, recurrence.
+ * Used for both the on-screen table (JSON) and the Excel export (same rows, different shape).
+ */
+async function getRecurringActivityReport(tenantId, filters = {}) {
+  const { employeeId, startDate, endDate, taskId, departmentId, status, recurrence } = filters;
+
+  const where = ['t.tenant_id = ?', "t.category IS NOT NULL"];
+  const params = [tenantId];
+
+  if (startDate) { where.push('o.occurrence_date >= ?'); params.push(startDate); }
+  if (endDate) { where.push('o.occurrence_date <= ?'); params.push(endDate); }
+  if (taskId) { where.push('(t.public_id = ? OR t.id = ?)'); params.push(taskId, taskId); }
+  if (status) { where.push('UPPER(o.status) = UPPER(?)'); params.push(status); }
+  if (recurrence) { where.push('t.recurrence = ?'); params.push(recurrence); }
+  if (employeeId) {
+    where.push('EXISTS (SELECT 1 FROM task_assignments ta JOIN users u ON u._id = ta.user_id WHERE ta.task_id = t.id AND (u.public_id = ? OR u._id = ?))');
+    params.push(employeeId, employeeId);
+  }
+  if (departmentId) {
+    where.push('EXISTS (SELECT 1 FROM task_assignments ta JOIN users u ON u._id = ta.user_id JOIN departments d ON d.public_id = u.department_public_id WHERE ta.task_id = t.id AND (d.public_id = ? OR d.id = ?))');
+    params.push(departmentId, departmentId);
+  }
+
+  const rows = await q(
+    `
+      SELECT o.id AS occurrence_id, o.occurrence_date, o.status, o.completed_at, o.remarks,
+             t.id AS task_id, t.public_id AS task_public_id, t.title AS task_name, t.category, t.recurrence,
+             GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') AS employee_names,
+             GROUP_CONCAT(DISTINCT d.name SEPARATOR ', ') AS department_names
+      FROM task_occurrences o
+      INNER JOIN tasks t ON t.id = o.task_id
+      LEFT JOIN task_assignments ta ON ta.task_id = t.id
+      LEFT JOIN users u ON u._id = ta.user_id
+      LEFT JOIN departments d ON d.public_id = u.department_public_id
+      WHERE ${where.join(' AND ')}
+      GROUP BY o.id
+      ORDER BY o.occurrence_date DESC, o.id DESC
+      LIMIT 5000
+    `,
+    params
+  );
+
+  return (rows || []).map((row) => ({
+    occurrenceId: row.occurrence_id,
+    occurrenceDate: row.occurrence_date,
+    status: row.status,
+    completedAt: row.completed_at,
+    remarks: row.remarks,
+    taskId: row.task_public_id || String(row.task_id),
+    taskName: row.task_name,
+    category: row.category,
+    recurrence: row.recurrence,
+    employeeNames: row.employee_names || '',
+    departmentNames: row.department_names || '',
+  }));
+}
+
+module.exports = { generateProjectReport, projectLookupDiagnostic, getExtendedDashboardMetrics, getRecurringActivityReport };

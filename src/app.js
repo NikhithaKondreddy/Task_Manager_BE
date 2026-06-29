@@ -62,6 +62,14 @@ bootstrapPromise.then(() => {
   } catch (e) {
     logger.warn('Failed to initialize recurrence scheduler: ' + (e && e.message ? e.message : String(e)));
   }
+
+  try {
+    const overdueScheduler = require(__root + 'services/overdueScheduler');
+    if (overdueScheduler && typeof overdueScheduler.start === 'function') overdueScheduler.start();
+    logger.info('Overdue scheduler initialized');
+  } catch (e) {
+    logger.warn('Failed to initialize overdue scheduler: ' + (e && e.message ? e.message : String(e)));
+  }
 }).catch(() => {});
 
 server.bootstrapReady = bootstrapPromise;

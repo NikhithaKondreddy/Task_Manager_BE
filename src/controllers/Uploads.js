@@ -38,6 +38,11 @@ const s3 = new S3Client({
 });
 
 const storage = multer.memoryStorage();
+const isSupportedPhoto = (file) => {
+  const type = String(file?.mimetype || '').toLowerCase();
+  const name = String(file?.originalname || '').toLowerCase();
+  return ['image/jpeg', 'image/jpg', 'image/png'].includes(type) || /\.(jpe?g|png)$/.test(name);
+};
 const upload = multer({ storage });
 
 router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Manager','Employee']), upload.single('file'), async (req, res) => {
@@ -46,6 +51,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
     const { taskId, userId } = req.body;
 
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    if (!isSupportedPhoto(req.file)) return res.status(400).json({ error: 'Only JPG, JPEG, and PNG photos are supported' });
     if (!taskId || !userId) return res.status(400).json({ error: 'Task ID and User ID are required' });
 
     const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
