@@ -1289,7 +1289,7 @@ async function validateTaskCompletionEligibility(connection, taskId, tenantId) {
 
 async function recalculateTaskProgressAndStatus(connection, taskId, tenantId) {
   if (!taskId) return;
-  
+
   const rows = await qConn(
     connection,
     'SELECT id, parent_id, checkpoints, auto_progress_calculation, status FROM tasks WHERE id = ?',
@@ -1396,36 +1396,36 @@ async function loadTaskAssignmentsForTenant(taskId, tenantId) {
   }
   sql += ' ORDER BY u.name ASC';
   const rows = await q(sql, params);
-    const queryTime = Date.now();
-    return (rows || []).map((row) => {
-      const storedDuration = Number(row.user_total_duration || 0);
-      const liveTimerRaw = row.user_live_timer ? new Date(row.user_live_timer) : null;
-      const assigneeStatus = normalizeTaskLifecycleStatus(row.user_status || 'PENDING');
-      // Compute running total: only add elapsed when actively IN_PROGRESS with a live_timer
-      let liveTotalSeconds = storedDuration;
-      if (assigneeStatus === 'IN_PROGRESS' && liveTimerRaw) {
-        const elapsed = Math.max(0, Math.floor((queryTime - liveTimerRaw.getTime()) / 1000));
-        liveTotalSeconds = storedDuration + elapsed;
-      }
-      return {
-        id: row.public_id || String(row._id),
-        internalId: String(row._id),
-        name: row.name || null,
-        email: row.email || null,
-        role: row.role || null,
-        readOnly: Number(row.is_read_only || 0) === 1,
-        status: assigneeStatus,
-        started_at: row.user_started_at ? new Date(row.user_started_at).toISOString() : null,
-        live_timer: liveTimerRaw ? liveTimerRaw.toISOString() : null,
-        completed_at: row.user_completed_at ? new Date(row.user_completed_at).toISOString() : null,
-        total_duration: storedDuration,
-        live_total_seconds: liveTotalSeconds,
-        live_total_hours: Number((liveTotalSeconds / 3600).toFixed(2)),
-        live_total_hhmmss: formatDuration(liveTotalSeconds),
-        rejection_reason: row.user_rejection_reason || null,
-        checklist: row.checklist ? JSON.parse(row.checklist) : []
-      };
-    });
+  const queryTime = Date.now();
+  return (rows || []).map((row) => {
+    const storedDuration = Number(row.user_total_duration || 0);
+    const liveTimerRaw = row.user_live_timer ? new Date(row.user_live_timer) : null;
+    const assigneeStatus = normalizeTaskLifecycleStatus(row.user_status || 'PENDING');
+    // Compute running total: only add elapsed when actively IN_PROGRESS with a live_timer
+    let liveTotalSeconds = storedDuration;
+    if (assigneeStatus === 'IN_PROGRESS' && liveTimerRaw) {
+      const elapsed = Math.max(0, Math.floor((queryTime - liveTimerRaw.getTime()) / 1000));
+      liveTotalSeconds = storedDuration + elapsed;
+    }
+    return {
+      id: row.public_id || String(row._id),
+      internalId: String(row._id),
+      name: row.name || null,
+      email: row.email || null,
+      role: row.role || null,
+      readOnly: Number(row.is_read_only || 0) === 1,
+      status: assigneeStatus,
+      started_at: row.user_started_at ? new Date(row.user_started_at).toISOString() : null,
+      live_timer: liveTimerRaw ? liveTimerRaw.toISOString() : null,
+      completed_at: row.user_completed_at ? new Date(row.user_completed_at).toISOString() : null,
+      total_duration: storedDuration,
+      live_total_seconds: liveTotalSeconds,
+      live_total_hours: Number((liveTotalSeconds / 3600).toFixed(2)),
+      live_total_hhmmss: formatDuration(liveTotalSeconds),
+      rejection_reason: row.user_rejection_reason || null,
+      checklist: row.checklist ? JSON.parse(row.checklist) : []
+    };
+  });
 }
 
 async function canReadTenantTask(task, req) {
@@ -1636,7 +1636,7 @@ async function loadTenantTaskForResponse(taskId, tenantId, req = null) {
     progress: c.progress != null ? Number(c.progress) : 0,
     priority: c.priority || null
   }));
-  
+
   formatted.files = (files || []).map(f => {
     let url = f.file_url || null;
     if (url && url.startsWith('/uploads/')) {
@@ -1718,7 +1718,7 @@ async function buildTaskScopeQuery(req, tenantId, filters) {
 
   if (filters.status && filters.status !== 'All') {
     if (String(filters.status).toUpperCase() === 'OVERDUE') {
-      where.push("UPPER(COALESCE(t.status, '')) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') AND (t.dueDate < NOW() OR t.taskDate < CURDATE())");
+      where.push("UPPER(COALESCE(t.status, '')) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') AND t.taskDate < NOW()");
     } else {
       const requestedStatuses = String(filters.status)
         .split(',')
@@ -1795,13 +1795,13 @@ async function buildTaskScopeQuery(req, tenantId, filters) {
   const dateFilter = filters.dateFilter;
   if (dateFilter && dateFilter !== 'all') {
     if (dateFilter === 'today') {
-      where.push('DATE(COALESCE(t.taskDate, t.dueDate)) = CURDATE()');
+      where.push('DATE(t.taskDate) = CURDATE()');
     } else if (dateFilter === 'this_week') {
-      where.push('YEARWEEK(COALESCE(t.taskDate, t.dueDate), 1) = YEARWEEK(CURDATE(), 1)');
+      where.push('YEARWEEK(t.taskDate, 1) = YEARWEEK(CURDATE(), 1)');
     } else if (dateFilter === 'this_month') {
-      where.push('YEAR(COALESCE(t.taskDate, t.dueDate)) = YEAR(CURDATE()) AND MONTH(COALESCE(t.taskDate, t.dueDate)) = MONTH(CURDATE())');
+      where.push('YEAR(t.taskDate) = YEAR(CURDATE()) AND MONTH(t.taskDate) = MONTH(CURDATE())');
     } else if (dateFilter === 'custom' && filters.dateFrom && filters.dateTo) {
-      where.push('DATE(COALESCE(t.taskDate, t.dueDate)) BETWEEN ? AND ?');
+      where.push('DATE(t.taskDate) BETWEEN ? AND ?');
       params.push(filters.dateFrom, filters.dateTo);
     }
   }
@@ -1827,7 +1827,7 @@ async function getDashboardSummary(req, res) {
       SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'REVIEW' THEN 1 ELSE 0 END) AS reviewTasks,
       SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'COMPLETED' THEN 1 ELSE 0 END) AS completedTasks,
       SUM(CASE WHEN UPPER(COALESCE(t.status, '')) = 'ON_HOLD' THEN 1 ELSE 0 END) AS onHoldTasks,
-      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') AND (t.dueDate < NOW() OR t.taskDate < CURDATE()) THEN 1 ELSE 0 END) AS overdueTasks,
+      SUM(CASE WHEN UPPER(COALESCE(t.status, '')) NOT IN ('COMPLETED', 'APPROVED', 'CLOSED') AND t.taskDate < NOW() THEN 1 ELSE 0 END) AS overdueTasks,
       SUM(CASE WHEN LOWER(t.task_type) = 'individual' THEN 1 ELSE 0 END) AS individualTasks,
       SUM(CASE WHEN LOWER(t.task_type) = 'project' THEN 1 ELSE 0 END) AS projectTasks,
       SUM(CASE WHEN t.recurrence IN ('Daily', 'Weekly', 'Monthly') THEN 1 ELSE 0 END) AS recurringTasks,
@@ -1993,7 +1993,7 @@ async function listTenantTasks(req, res) {
     // Include `kanban` ONLY for EMPLOYEE role
     let response = { success: true, data: tasks, meta, pagination };
     if (req.user.role === "EMPLOYEE") {
-        response.kanban = kanban;
+      response.kanban = kanban;
     }
     return res.json(response);
   }
@@ -2195,7 +2195,7 @@ async function listTenantTasks(req, res) {
   const messages = canRequestClosure ? ["All tasks completed"] : [];
   let response = { success: true, data: shapedTasks, meta, pagination, messages };
   if (req.user.role === "EMPLOYEE") {
-      response.kanban = kanban;
+    response.kanban = kanban;
   }
   return res.json(response);
 }
@@ -2543,16 +2543,63 @@ async function updateTenantTask(req, res) {
     taskUpdates.push('description = ?');
     values.push(req.body.description || null);
   }
+
+  if (Object.prototype.hasOwnProperty.call(req.body, 'priority')) {
+    taskUpdates.push('priority = ?');
+    values.push(normalizeTaskPriority(req.body.priority));
+  }
   if (Object.prototype.hasOwnProperty.call(req.body, 'recurrence')) {
     if (['Individual', 'Daily', 'Weekly', 'Monthly'].includes(req.body.recurrence)) {
       taskUpdates.push('recurrence = ?');
       values.push(req.body.recurrence);
     }
   }
-  if (Object.prototype.hasOwnProperty.call(req.body, 'priority')) {
-    taskUpdates.push('priority = ?');
-    values.push(normalizeTaskPriority(req.body.priority));
+  if (Object.prototype.hasOwnProperty.call(req.body, 'start_date') || Object.prototype.hasOwnProperty.call(req.body, 'startDate')) {
+    if (await hasColumn('tasks', 'start_date')) {
+      taskUpdates.push('start_date = ?');
+      values.push(toMySQLDate(req.body.start_date || req.body.startDate || null));
+    }
   }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'end_date') || Object.prototype.hasOwnProperty.call(req.body, 'endDate')) {
+    if (await hasColumn('tasks', 'end_date')) {
+      taskUpdates.push('end_date = ?');
+      values.push(toMySQLDate(req.body.end_date || req.body.endDate || null));
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'day_of_week') || Object.prototype.hasOwnProperty.call(req.body, 'dayOfWeek')) {
+    if (await hasColumn('tasks', 'day_of_week')) {
+      const dow = req.body.day_of_week ?? req.body.dayOfWeek;
+      taskUpdates.push('day_of_week = ?');
+      values.push(dow !== null && dow !== '' ? Number(dow) : null);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'day_of_month') || Object.prototype.hasOwnProperty.call(req.body, 'dayOfMonth')) {
+    if (await hasColumn('tasks', 'day_of_month')) {
+      const dom = req.body.day_of_month ?? req.body.dayOfMonth;
+      taskUpdates.push('day_of_month = ?');
+      values.push(dom !== null && dom !== '' ? Number(dom) : null);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'reminder_enabled') || Object.prototype.hasOwnProperty.call(req.body, 'reminderEnabled')) {
+    if (await hasColumn('tasks', 'reminder_enabled')) {
+      taskUpdates.push('reminder_enabled = ?');
+      values.push((req.body.reminder_enabled ?? req.body.reminderEnabled) ? 1 : 0);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'reminder_time') || Object.prototype.hasOwnProperty.call(req.body, 'reminderTime')) {
+    if (await hasColumn('tasks', 'reminder_time')) {
+      taskUpdates.push('reminder_time = ?');
+      values.push(req.body.reminder_time || req.body.reminderTime || null);
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(req.body, 'reminder_offset_days') || Object.prototype.hasOwnProperty.call(req.body, 'reminderOffsetDays')) {
+    if (await hasColumn('tasks', 'reminder_offset_days')) {
+      const offset = req.body.reminder_offset_days ?? req.body.reminderOffsetDays;
+      taskUpdates.push('reminder_offset_days = ?');
+      values.push(offset !== undefined && offset !== null ? Number(offset) : 0);
+    }
+  }
+
   if (Object.prototype.hasOwnProperty.call(req.body, 'taskDate') || Object.prototype.hasOwnProperty.call(req.body, 'dueDate')) {
     taskUpdates.push('taskDate = ?');
     values.push(toMySQLDate(req.body.taskDate || req.body.dueDate || null));
@@ -2560,8 +2607,8 @@ async function updateTenantTask(req, res) {
     taskUpdates.push('overdue_notified_at = NULL');
   }
   if (Object.prototype.hasOwnProperty.call(req.body, 'time_alloted') ||
-      Object.prototype.hasOwnProperty.call(req.body, 'timeAlloted') ||
-      Object.prototype.hasOwnProperty.call(req.body, 'estimatedHours')) {
+    Object.prototype.hasOwnProperty.call(req.body, 'timeAlloted') ||
+    Object.prototype.hasOwnProperty.call(req.body, 'estimatedHours')) {
     const timeAlloted = req.body.time_alloted ?? req.body.timeAlloted ?? req.body.estimatedHours ?? null;
     taskUpdates.push('time_alloted = ?');
     values.push(timeAlloted);
@@ -2592,7 +2639,7 @@ async function updateTenantTask(req, res) {
       values.push((req.body.mandatory_photo ?? req.body.mandatoryPhoto) ? 1 : 0);
     }
   }
-if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.prototype.hasOwnProperty.call(req.body, 'projectId')) {
+  if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.prototype.hasOwnProperty.call(req.body, 'projectId')) {
     const projectRefVal = req.body.project_id ?? req.body.projectId;
     if (projectRefVal === null || projectRefVal === '') {
       if (taskHasProjectId) {
@@ -2666,7 +2713,7 @@ if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.proto
     const checkpoints = req.body.checkpoints;
     const checkpointsJson = checkpoints ? (typeof checkpoints === 'string' ? checkpoints : JSON.stringify(checkpoints)) : null;
     values.push(checkpointsJson);
-    
+
     let newProgress = 0;
     try {
       const cpArr = Array.isArray(checkpoints) ? checkpoints : (checkpoints ? JSON.parse(checkpoints) : []);
@@ -2674,7 +2721,7 @@ if (Object.prototype.hasOwnProperty.call(req.body, 'project_id') || Object.proto
         const completed = cpArr.filter(c => c.status === 'COMPLETED').length;
         newProgress = Math.round((completed / cpArr.length) * 100);
       }
-    } catch (e) {}
+    } catch (e) { }
     values.push(newProgress);
   }
   if (Object.prototype.hasOwnProperty.call(req.body, 'dependencies')) {
@@ -2783,7 +2830,7 @@ async function updateTenantTaskCheckpoints(req, res) {
   }
 
   const checkpointsJson = typeof checkpoints === 'string' ? checkpoints : JSON.stringify(checkpoints);
-  
+
   let newProgress = 0;
   try {
     const cpArr = Array.isArray(checkpoints) ? checkpoints : JSON.parse(checkpoints);
@@ -3702,6 +3749,17 @@ async function ensureTaskIndexes() {
   ];
   for (const idx of indexes) {
     try {
+      const checkSql = `
+        SELECT 1 FROM INFORMATION_SCHEMA.STATISTICS 
+        WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = 'tasks' 
+          AND INDEX_NAME = ? 
+        LIMIT 1
+      `;
+      const exists = await q(checkSql, [idx.name]);
+      if (exists && exists.length > 0) {
+        continue;
+      }
       await q(idx.sql);
     } catch (err) {
       if (err.errno === 1061 || err.code === 'ER_DUP_KEYNAME') {
@@ -4078,14 +4136,14 @@ router.post('/selected-details', requireRole(['Admin', 'Manager', 'Employee']), 
         if (!f || f.task_id === undefined || f.task_id === null) return;
         const k = String(f.task_id);
         if (!filesMap[k]) filesMap[k] = [];
-        
+
         let url = f.file_url || null;
         if (url && url.startsWith('/uploads/')) {
           const rel = url.replace(/^\/uploads\//, '');
           const parts = rel.split('/').map(p => encodeURIComponent(p));
           url = `${req ? (req.protocol + '://' + req.get('host')) : ''}/uploads/${parts.join('/')}`;
         }
-        
+
         filesMap[k].push({
           id: f.id != null ? String(f.id) : null,
           url,
@@ -7540,14 +7598,14 @@ router.put('/:taskId/users/:userId/checklist', async (req, res) => {
       updateTaskId = taskRow && taskRow[0] ? taskRow[0].task_id : null;
     }
     if (!updateTaskId) {
-      return res.status(404).json({ success: false, error: 'Assignment not found (task id missing)'});
+      return res.status(404).json({ success: false, error: 'Assignment not found (task id missing)' });
     }
     // Resolve userId to internal _id if needed
     let resolvedUserId = userId;
     if (typeof userId === 'string' && !/^[0-9]+$/.test(userId)) {
       const userRow = await q('SELECT _id FROM users WHERE public_id = ?', [userId]);
       if (!userRow.length) {
-        return res.status(404).json({ success: false, error: 'User not found'});
+        return res.status(404).json({ success: false, error: 'User not found' });
       }
       resolvedUserId = userRow[0]._id;
     }

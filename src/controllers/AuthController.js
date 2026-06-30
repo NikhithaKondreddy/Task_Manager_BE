@@ -49,7 +49,7 @@ const MODULE_ROUTE_MAP = {
     'Departments':      '/manager/departments'
   },
   Employee: {
-    'Dashboard':        '/user/dashboard',
+    'Dashboard':        '/employee/dashboard',
     'Projects':         '/employee/projects',
     'Tasks':            '/employee/tasks'
   },
@@ -327,7 +327,7 @@ function getDefaultRouteForRole(role) {
     SuperAdmin: '/super-admin/dashboard',
     Admin: '/admin/dashboard',
     Manager: '/manager/dashboard',
-    Employee: '/user/dashboard',
+    Employee: '/employee/dashboard',
     'Client-Viewer': '/client/dashboard',
     'IT Support': '/it-support/dashboard'
   };
@@ -1535,6 +1535,49 @@ router.get('/2fa/status', requireAuth, async (req, res) => {
     });
   } catch (e) {
     return res.status(500).json({ message: 'Error fetching 2FA status', error: e.message });
+  }
+});
+
+router.get('/getUserProfile', requireAuth, async (req, res) => {
+  try {
+    const userId = req.user && req.user._id;
+    if (!userId) return res.status(401).json({ message: 'Not authenticated' });
+
+    const sql = 'SELECT _id, public_id, name, email, tenant_id, role, phone, title, department, photo, is_active, last_login FROM users WHERE _id = ? LIMIT 1';
+    db.query(sql, [userId], async (err, rows) => {
+      if (err) return res.status(500).json({ message: 'DB error', error: err.message });
+      if (!rows || rows.length === 0) return res.status(404).json({ message: 'User not found' });
+
+      const user = rows[0];
+      const persistedRole = persistRole(user.role);
+      const publicUserId = user.public_id || String(user._id);
+
+      const protocol = req.headers['x-forwarded-proto'] || req.protocol;
+      let photoUrl = user.photo || null;
+      if (photoUrl && !photoUrl.startsWith('http')) {
+        photoUrl = `${protocol}://${req.get('host')}${photoUrl.startsWith('/') ? '' : '/'}${photoUrl}`;
+      }
+
+      return res.json({
+        success: true,
+        user: {
+          id: publicUserId,
+          email: user.email,
+          name: user.name,
+          role: persistedRole,
+          normalized_role: normalizeRole(persistedRole),
+          phone: user.phone || null,
+          title: user.title || null,
+          department: user.department || null,
+          photo: photoUrl,
+          tenant_id: user.tenant_id || null,
+          is_active: user.is_active,
+          last_login: user.last_login || null
+        }
+      });
+    });
+  } catch (e) {
+    return res.status(500).json({ message: 'Error fetching user profile', error: e.message });
   }
 });
 
