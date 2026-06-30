@@ -2239,6 +2239,18 @@ async function createTenantTask(req, res) {
   const projectRef = req.body.project_id || req.body.projectId || req.body.projectPublicId || null;
   const clientRef = req.body.client_id || req.body.clientId || null;
   const recurrence = ['Individual', 'Daily', 'Weekly', 'Monthly'].includes(req.body.recurrence) ? req.body.recurrence : 'Individual';
+  const startDate = req.body.start_date ?? req.body.startDate ?? null;
+  const endDate = req.body.end_date ?? req.body.endDate ?? null;
+  const dayOfWeek = req.body.day_of_week ?? req.body.dayOfWeek;
+  const dayOfMonth = req.body.day_of_month ?? req.body.dayOfMonth;
+  const reminderEnabled = req.body.reminder_enabled ?? req.body.reminderEnabled ?? false;
+  const reminderTime = req.body.reminder_time ?? req.body.reminderTime ?? null;
+  const reminderOffsetDays = req.body.reminder_offset_days ?? req.body.reminderOffsetDays ?? 0;
+  const allowPhotoUpload = req.body.allow_photo_upload ?? req.body.allowPhotoUpload ?? req.body.requirePhotoUpload ?? false;
+  const mandatoryPhoto = req.body.mandatory_photo ?? req.body.mandatoryPhoto ?? allowPhotoUpload ?? false;
+  const mandatoryChecklist = req.body.mandatory_checklist ?? req.body.mandatoryChecklist ?? false;
+  const mandatoryRemarks = req.body.mandatory_remarks ?? req.body.mandatoryRemarks ?? false;
+  const dueTime = req.body.due_time ?? req.body.dueTime ?? null;
 
   const parentRef = req.body.parent_id || req.body.parentId || null;
   const checkpoints = req.body.checkpoints || null;
@@ -2359,37 +2371,41 @@ async function createTenantTask(req, res) {
       taskColumns.push('recurrence');
       taskValues.push(recurrence);
     }
-    if (await hasColumn('tasks', 'start_date') && req.body.start_date) {
+    if (await hasColumn('tasks', 'start_date') && startDate) {
       taskColumns.push('start_date');
-      taskValues.push(toMySQLDate(req.body.start_date));
+      taskValues.push(toMySQLDate(startDate));
     }
-    if (await hasColumn('tasks', 'end_date') && req.body.end_date) {
+    if (await hasColumn('tasks', 'end_date') && endDate) {
       taskColumns.push('end_date');
-      taskValues.push(toMySQLDate(req.body.end_date));
+      taskValues.push(toMySQLDate(endDate));
     }
-    if (await hasColumn('tasks', 'day_of_week') && req.body.day_of_week !== undefined && req.body.day_of_week !== '') {
+    if (await hasColumn('tasks', 'day_of_week') && dayOfWeek !== undefined && dayOfWeek !== '') {
       taskColumns.push('day_of_week');
-      taskValues.push(Number(req.body.day_of_week));
+      taskValues.push(Number(dayOfWeek));
     }
-    if (await hasColumn('tasks', 'day_of_month') && req.body.day_of_month !== undefined && req.body.day_of_month !== '') {
+    if (await hasColumn('tasks', 'day_of_month') && dayOfMonth !== undefined && dayOfMonth !== '') {
       taskColumns.push('day_of_month');
-      taskValues.push(Number(req.body.day_of_month));
+      taskValues.push(Number(dayOfMonth));
+    }
+    if (await hasColumn('tasks', 'next_due_date') && recurrence !== 'Individual') {
+      taskColumns.push('next_due_date');
+      taskValues.push(toMySQLDate(startDate || dueDate || now));
     }
     if (await hasColumn('tasks', 'reminder_enabled')) {
       taskColumns.push('reminder_enabled');
-      taskValues.push(req.body.reminder_enabled ? 1 : 0);
+      taskValues.push(reminderEnabled ? 1 : 0);
     }
-    if (await hasColumn('tasks', 'reminder_time') && req.body.reminder_time) {
+    if (await hasColumn('tasks', 'reminder_time') && reminderTime) {
       taskColumns.push('reminder_time');
-      taskValues.push(req.body.reminder_time);
+      taskValues.push(reminderTime);
     }
-    if (await hasColumn('tasks', 'reminder_offset_days') && req.body.reminder_offset_days !== undefined) {
+    if (await hasColumn('tasks', 'reminder_offset_days') && reminderOffsetDays !== undefined) {
       taskColumns.push('reminder_offset_days');
-      taskValues.push(Number(req.body.reminder_offset_days) || 0);
+      taskValues.push(Number(reminderOffsetDays) || 0);
     }
     if (await hasColumn('tasks', 'allow_photo_upload')) {
       taskColumns.push('allow_photo_upload');
-      taskValues.push(req.body.allow_photo_upload ? 1 : 0);
+      taskValues.push(allowPhotoUpload ? 1 : 0);
     }
     if (await hasColumn('tasks', 'category') && req.body.category) {
       taskColumns.push('category');
@@ -2397,19 +2413,19 @@ async function createTenantTask(req, res) {
     }
     if (await hasColumn('tasks', 'mandatory_photo')) {
       taskColumns.push('mandatory_photo');
-      taskValues.push(req.body.mandatory_photo ? 1 : 0);
+      taskValues.push(mandatoryPhoto ? 1 : 0);
     }
     if (await hasColumn('tasks', 'mandatory_checklist')) {
       taskColumns.push('mandatory_checklist');
-      taskValues.push(req.body.mandatory_checklist ? 1 : 0);
+      taskValues.push(mandatoryChecklist ? 1 : 0);
     }
     if (await hasColumn('tasks', 'mandatory_remarks')) {
       taskColumns.push('mandatory_remarks');
-      taskValues.push(req.body.mandatory_remarks ? 1 : 0);
+      taskValues.push(mandatoryRemarks ? 1 : 0);
     }
-    if (await hasColumn('tasks', 'due_time') && req.body.due_time) {
+    if (await hasColumn('tasks', 'due_time') && dueTime) {
       taskColumns.push('due_time');
-      taskValues.push(req.body.due_time);
+      taskValues.push(dueTime);
     }
     if (await hasColumn('tasks', 'parent_id')) {
       taskColumns.push('parent_id');
@@ -2482,6 +2498,19 @@ async function createTenantTask(req, res) {
     }
 
     await commitTransactionAsync(connection);
+
+    if (recurrence !== 'Individual') {
+      try {
+        await OccurrenceService.createOccurrence({
+          taskId,
+          occurrenceDate: startDate || dueDate || now,
+          tenantId,
+          createdBy: req.user._id
+        });
+      } catch (occurrenceError) {
+        logger.warn('Failed to create initial occurrence for task ' + taskId + ': ' + (occurrenceError && occurrenceError.message ? occurrenceError.message : occurrenceError));
+      }
+    }
 
     await sendTenantTaskNotifications(
       assigneeIds,

@@ -55,13 +55,20 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
     if (!taskId || !userId) return res.status(400).json({ error: 'Task ID and User ID are required' });
 
     const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
-    // Validate task exists and belongs to the active tenant
+    const numericTaskId = /^\d+$/.test(String(taskId)) ? Number(taskId) : null;
+    // Validate task exists and belongs to the active tenant. Frontend task flows
+    // may pass either tasks.id or tasks.public_id.
     const taskRows = await new Promise((resolve, reject) => {
-      db.query(`SELECT id FROM tasks WHERE id = ? AND tenant_id = ? ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''} LIMIT 1`, [taskId, tenantId], (err, rows) => err ? reject(err) : resolve(rows));
+      db.query(
+        `SELECT id FROM tasks WHERE (id = ? OR public_id = ?) AND tenant_id = ? ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''} LIMIT 1`,
+        [numericTaskId, String(taskId), tenantId],
+        (err, rows) => err ? reject(err) : resolve(rows)
+      );
     });
     if (!taskRows || taskRows.length === 0) {
       return res.status(404).json({ error: 'Task not found or does not belong to active tenant' });
     }
+    const resolvedTaskId = taskRows[0].id;
 
     const uniqueName = `${Date.now()}-${req.file.originalname.replace(/[^a-zA-Z0-9._()-]/g, '_')}`;
 
@@ -89,7 +96,7 @@ router.post('/upload', ruleEngine(RULES.UPLOAD_CREATE), requireRole(['Admin','Ma
 
     const doInsert = (resolvedUserId) => {
       const sql = `INSERT INTO files (file_url, file_name, file_type, file_size, task_id, user_id, uploaded_at, isActive, tenant_id) VALUES (?, ?, ?, ?, ?, ?, NOW(), 1, ?)`;
-      const params = [storedPath, req.file.originalname, req.file.mimetype, req.file.size, taskId, resolvedUserId, tenantId];
+      const params = [storedPath, req.file.originalname, req.file.mimetype, req.file.size, resolvedTaskId, resolvedUserId, tenantId];
       db.query(sql, params, (err, results) => {
         if (err) {
           logger.error('Database Error:', err);
@@ -122,12 +129,18 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
   const { id } = req.params;
   try {
     const hasTaskDeleted = await hasColumn('tasks', 'isDeleted');
+    const numericTaskId = /^\d+$/.test(String(id)) ? Number(id) : null;
     const taskRows = await new Promise((resolve, reject) => {
-      db.query(`SELECT id FROM tasks WHERE id = ? AND tenant_id = ? ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''} LIMIT 1`, [id, tenantId], (err, rows) => err ? reject(err) : resolve(rows));
+      db.query(
+        `SELECT id FROM tasks WHERE (id = ? OR public_id = ?) AND tenant_id = ? ${hasTaskDeleted ? 'AND (isDeleted IS NULL OR isDeleted != 1)' : ''} LIMIT 1`,
+        [numericTaskId, String(id), tenantId],
+        (err, rows) => err ? reject(err) : resolve(rows)
+      );
     });
     if (!taskRows || taskRows.length === 0) {
       return res.status(404).json({ error: 'Task not found or access denied' });
     }
+    const resolvedTaskId = taskRows[0].id;
 
     const baseQuery = `
       SELECT 
@@ -145,7 +158,7 @@ router.get('/getuploads/:id', ruleEngine(RULES.UPLOAD_VIEW), requireRole(['Admin
 
     const runQuery = (resolvedUserId) => {
       let sql = baseQuery;
-      const params = [id, tenantId];
+      const params = [resolvedTaskId, tenantId];
       if (resolvedUserId) {
         sql = sql.replace(/ORDER BY[\s\S]*$/m, '');
         sql += ' AND f.user_id = ? ORDER BY f.uploaded_at DESC';

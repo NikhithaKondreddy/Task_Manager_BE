@@ -11,6 +11,20 @@ async function query(sql, params = []) {
   return new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
 }
 
+const columnCache = new Map();
+
+async function hasColumn(table, column) {
+  const key = `${table}.${column}`;
+  if (columnCache.has(key)) return columnCache.get(key);
+  const rows = await query(
+    'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+    [table, column]
+  );
+  const exists = Array.isArray(rows) && rows.length > 0;
+  columnCache.set(key, exists);
+  return exists;
+}
+
 function addDaysSafe(date, days) {
   return dayjs(date).add(days, 'day');
 }
@@ -64,12 +78,43 @@ let scheduledTask = null;
 
 async function processCreateOccurrences() {
   try {
+    const taskColumns = {
+      start_date: await hasColumn('tasks', 'start_date'),
+      end_date: await hasColumn('tasks', 'end_date'),
+      next_due_date: await hasColumn('tasks', 'next_due_date'),
+      tenant_id: await hasColumn('tasks', 'tenant_id'),
+      day_of_week: await hasColumn('tasks', 'day_of_week'),
+      day_of_month: await hasColumn('tasks', 'day_of_month'),
+      reminder_enabled: await hasColumn('tasks', 'reminder_enabled'),
+      reminder_time: await hasColumn('tasks', 'reminder_time'),
+      reminder_offset_days: await hasColumn('tasks', 'reminder_offset_days'),
+      recurrence_parent_id: await hasColumn('tasks', 'recurrence_parent_id')
+    };
+
+    const selectColumns = [
+      'id',
+      'public_id',
+      'title',
+      'recurrence',
+      taskColumns.recurrence_parent_id ? 'recurrence_parent_id' : 'NULL AS recurrence_parent_id',
+      'taskDate',
+      taskColumns.next_due_date ? 'next_due_date' : 'NULL AS next_due_date',
+      taskColumns.tenant_id ? 'tenant_id' : 'NULL AS tenant_id',
+      taskColumns.day_of_week ? 'day_of_week' : 'NULL AS day_of_week',
+      taskColumns.day_of_month ? 'day_of_month' : 'NULL AS day_of_month',
+      taskColumns.reminder_enabled ? 'reminder_enabled' : '0 AS reminder_enabled',
+      taskColumns.reminder_time ? 'reminder_time' : 'NULL AS reminder_time',
+      taskColumns.reminder_offset_days ? 'reminder_offset_days' : '0 AS reminder_offset_days'
+    ];
+
+    const where = ["recurrence IN ('Daily','Weekly','Monthly')"];
+    if (taskColumns.start_date) where.push('(start_date IS NULL OR start_date <= NOW())');
+    if (taskColumns.end_date) where.push('(end_date IS NULL OR end_date >= NOW())');
+
     const tasks = await query(`
-      SELECT id, public_id, title, recurrence, recurrence_parent_id, taskDate, next_due_date, tenant_id, day_of_week, day_of_month, reminder_enabled, reminder_time, reminder_offset_days
+      SELECT ${selectColumns.join(', ')}
       FROM tasks
-      WHERE recurrence IN ('Daily','Weekly','Monthly')
-        AND (start_date IS NULL OR start_date <= NOW())
-        AND (end_date IS NULL OR end_date >= NOW())
+      WHERE ${where.join(' AND ')}
       LIMIT 200
     `);
 
@@ -96,7 +141,7 @@ async function processCreateOccurrences() {
         // compute and update next_due_date
         const baseRef = task.next_due_date || task.taskDate || new Date();
         const next = computeNextDate(task, baseRef);
-        if (next && next.isValid()) {
+        if (next && next.isValid() && taskColumns.next_due_date) {
           await query('UPDATE tasks SET next_due_date = ? WHERE id = ?', [next.format('YYYY-MM-DD HH:mm:ss'), task.id]);
         }
       } catch (e) {
@@ -110,9 +155,27 @@ async function processCreateOccurrences() {
 
 async function processReminders() {
   try {
+    const occurrenceHasReminderSent = await hasColumn('task_occurrences', 'reminder_sent');
+    const taskHasReminderEnabled = await hasColumn('tasks', 'reminder_enabled');
+    if (!occurrenceHasReminderSent || !taskHasReminderEnabled) return;
+
+    const taskColumns = {
+      reminder_time: await hasColumn('tasks', 'reminder_time'),
+      reminder_offset_days: await hasColumn('tasks', 'reminder_offset_days'),
+      tenant_id: await hasColumn('tasks', 'tenant_id')
+    };
+
     // Fetch occurrences that haven't had reminders sent and whose task has reminders enabled
     const rows = await query(`
-      SELECT o.id AS occurrence_id, o.task_id, o.occurrence_date, o.reminder_sent, t.reminder_time, t.reminder_offset_days, t.tenant_id, t.public_id, t.title
+      SELECT o.id AS occurrence_id,
+             o.task_id,
+             o.occurrence_date,
+             o.reminder_sent,
+             ${taskColumns.reminder_time ? 't.reminder_time' : 'NULL AS reminder_time'},
+             ${taskColumns.reminder_offset_days ? 't.reminder_offset_days' : '0 AS reminder_offset_days'},
+             ${taskColumns.tenant_id ? 't.tenant_id' : 'NULL AS tenant_id'},
+             t.public_id,
+             t.title
       FROM task_occurrences o
       INNER JOIN tasks t ON o.task_id = t.id
       WHERE t.reminder_enabled = 1

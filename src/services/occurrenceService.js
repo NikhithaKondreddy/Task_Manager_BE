@@ -9,6 +9,38 @@ async function query(sql, params = []) {
   return new Promise((resolve, reject) => db.query(sql, params, (err, rows) => (err ? reject(err) : resolve(rows))));
 }
 
+const columnCache = new Map();
+
+async function hasColumn(table, column) {
+  const key = `${table}.${column}`;
+  if (columnCache.has(key)) return columnCache.get(key);
+  const rows = await query(
+    'SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? AND COLUMN_NAME = ? LIMIT 1',
+    [table, column]
+  );
+  const exists = Array.isArray(rows) && rows.length > 0;
+  columnCache.set(key, exists);
+  return exists;
+}
+
+async function getTaskOccurrenceColumns() {
+  const columnNames = [
+    'tenant_id',
+    'created_by',
+    'checklist',
+    'completed_at',
+    'remarks',
+    'latitude',
+    'longitude',
+    'location_name',
+    'photo_path'
+  ];
+  const entries = await Promise.all(
+    columnNames.map(async (column) => [column, await hasColumn('task_occurrences', column)])
+  );
+  return Object.fromEntries(entries);
+}
+
 /**
  * Task references arriving from the frontend are public_id strings (e.g. "tsk_abc123"),
  * not the internal numeric id task_occurrences.task_id actually stores. Mirrors
@@ -45,10 +77,26 @@ async function createOccurrence({ taskId, occurrenceDate, tenantId = null, creat
   try {
     const taskRows = await query('SELECT checkpoints FROM tasks WHERE id = ? LIMIT 1', [taskId]);
     const checklist = taskRows && taskRows[0] ? cloneChecklistTemplate(taskRows[0].checkpoints) : null;
+    const occurrenceColumns = await getTaskOccurrenceColumns();
+    const columns = ['task_id', 'occurrence_date', 'status'];
+    const values = [taskId, dateStr, 'Pending'];
+
+    if (occurrenceColumns.tenant_id) {
+      columns.push('tenant_id');
+      values.push(tenantId);
+    }
+    if (occurrenceColumns.created_by) {
+      columns.push('created_by');
+      values.push(createdBy);
+    }
+    if (occurrenceColumns.checklist) {
+      columns.push('checklist');
+      values.push(checklist ? JSON.stringify(checklist) : null);
+    }
 
     const insert = await query(
-      'INSERT IGNORE INTO task_occurrences (task_id, occurrence_date, status, tenant_id, created_by, checklist) VALUES (?, ?, ?, ?, ?, ?)',
-      [taskId, dateStr, 'Pending', tenantId, createdBy, checklist ? JSON.stringify(checklist) : null]
+      `INSERT IGNORE INTO task_occurrences (${columns.join(', ')}) VALUES (${columns.map(() => '?').join(', ')})`,
+      values
     );
     if (insert && insert.affectedRows && insert.affectedRows > 0) {
       const rows = await query('SELECT * FROM task_occurrences WHERE task_id = ? AND occurrence_date = ? LIMIT 1', [taskId, dateStr]);
@@ -87,12 +135,19 @@ async function validateOccurrenceCompletion(occurrenceId, { remarks } = {}) {
   if (!occurrence) return { eligible: false, error: 'Occurrence not found' };
 
   const taskRows = await query(
-    'SELECT mandatory_photo, mandatory_checklist, mandatory_remarks FROM tasks WHERE id = ? LIMIT 1',
+    `SELECT
+       ${await hasColumn('tasks', 'mandatory_photo') ? 'mandatory_photo' : '0 AS mandatory_photo'},
+       ${await hasColumn('tasks', 'mandatory_checklist') ? 'mandatory_checklist' : '0 AS mandatory_checklist'},
+       ${await hasColumn('tasks', 'mandatory_remarks') ? 'mandatory_remarks' : '0 AS mandatory_remarks'}
+     FROM tasks WHERE id = ? LIMIT 1`,
     [occurrence.task_id]
   );
   const task = taskRows && taskRows[0] ? taskRows[0] : {};
 
   if (task.mandatory_photo) {
+    if (!await hasColumn('files', 'occurrence_id')) {
+      return { eligible: false, error: 'Photo upload storage is not ready. Please run database bootstrap/migrations.' };
+    }
     const photoRows = await query('SELECT COUNT(*) as count FROM files WHERE occurrence_id = ?', [occurrenceId]);
     if (!photoRows || !photoRows[0] || Number(photoRows[0].count) === 0) {
       return { eligible: false, error: 'A photo is required before this occurrence can be completed' };
@@ -122,24 +177,30 @@ async function validateOccurrenceCompletion(occurrenceId, { remarks } = {}) {
 }
 
 async function updateOccurrenceChecklist(occurrenceId, checklist, tenantId = null) {
-  const sql = 'UPDATE task_occurrences SET checklist = ? WHERE id = ?' + (tenantId ? ' AND tenant_id = ?' : '');
-  const params = tenantId ? [JSON.stringify(checklist), occurrenceId, tenantId] : [JSON.stringify(checklist), occurrenceId];
+  if (!await hasColumn('task_occurrences', 'checklist')) {
+    return getOccurrenceById(occurrenceId);
+  }
+  const hasTenantId = await hasColumn('task_occurrences', 'tenant_id');
+  const sql = 'UPDATE task_occurrences SET checklist = ? WHERE id = ?' + (tenantId && hasTenantId ? ' AND tenant_id = ?' : '');
+  const params = tenantId && hasTenantId ? [JSON.stringify(checklist), occurrenceId, tenantId] : [JSON.stringify(checklist), occurrenceId];
   await query(sql, params);
   return getOccurrenceById(occurrenceId);
 }
 
 async function markOccurrenceCompleted(occurrenceId, completedBy = null, tenantId = null, { remarks, latitude, longitude, locationName } = {}) {
   try {
-    const updates = ['status = ?', 'completed_at = NOW()'];
+    const occurrenceColumns = await getTaskOccurrenceColumns();
+    const updates = ['status = ?'];
     const params = ['Completed'];
-    if (remarks !== undefined) { updates.push('remarks = ?'); params.push(remarks); }
-    if (latitude !== undefined) { updates.push('latitude = ?'); params.push(latitude); }
-    if (longitude !== undefined) { updates.push('longitude = ?'); params.push(longitude); }
-    if (locationName !== undefined) { updates.push('location_name = ?'); params.push(locationName); }
+    if (occurrenceColumns.completed_at) updates.push('completed_at = NOW()');
+    if (remarks !== undefined && occurrenceColumns.remarks) { updates.push('remarks = ?'); params.push(remarks); }
+    if (latitude !== undefined && occurrenceColumns.latitude) { updates.push('latitude = ?'); params.push(latitude); }
+    if (longitude !== undefined && occurrenceColumns.longitude) { updates.push('longitude = ?'); params.push(longitude); }
+    if (locationName !== undefined && occurrenceColumns.location_name) { updates.push('location_name = ?'); params.push(locationName); }
 
     let sql = `UPDATE task_occurrences SET ${updates.join(', ')} WHERE id = ?`;
     params.push(occurrenceId);
-    if (tenantId) { sql += ' AND tenant_id = ?'; params.push(tenantId); }
+    if (tenantId && occurrenceColumns.tenant_id) { sql += ' AND tenant_id = ?'; params.push(tenantId); }
 
     const update = await query(sql, params);
 
@@ -180,16 +241,20 @@ async function attachPhotoToOccurrence(occurrenceId, storedPath, fileName, fileT
  */
 async function attachPhotosToOccurrence(occurrenceId, photos, userId, tenantId = null) {
   try {
+    const filesHasOccurrenceId = await hasColumn('files', 'occurrence_id');
     const occRows = await query('SELECT task_id FROM task_occurrences WHERE id = ? LIMIT 1', [occurrenceId]);
     const taskId = (occRows && occRows[0] && occRows[0].task_id) ? occRows[0].task_id : null;
 
     const inserted = [];
     for (const photo of photos) {
-      const insertSql = `INSERT INTO files (file_url, file_name, file_type, file_size, task_id, user_id, uploaded_at, isActive, tenant_id, occurrence_id)
-        VALUES (?, ?, ?, ?, ?, ?, NOW(), 1, ?, ?)`;
-      const result = await query(insertSql, [
-        photo.storedPath, photo.fileName, photo.fileType, photo.fileSize, taskId, userId, tenantId, occurrenceId,
-      ]);
+      const fileColumns = ['file_url', 'file_name', 'file_type', 'file_size', 'task_id', 'user_id', 'uploaded_at', 'isActive', 'tenant_id'];
+      const fileValues = [photo.storedPath, photo.fileName, photo.fileType, photo.fileSize, taskId, userId, new Date(), 1, tenantId];
+      if (filesHasOccurrenceId) {
+        fileColumns.push('occurrence_id');
+        fileValues.push(occurrenceId);
+      }
+      const insertSql = `INSERT INTO files (${fileColumns.join(', ')}) VALUES (${fileColumns.map(() => '?').join(', ')})`;
+      const result = await query(insertSql, fileValues);
       inserted.push({
         id: result.insertId,
         file_url: photo.storedPath,
@@ -200,7 +265,7 @@ async function attachPhotosToOccurrence(occurrenceId, photos, userId, tenantId =
     }
 
     // Keep photo_path pointing at the most recent photo for backward-compatible single-photo consumers.
-    if (photos.length > 0) {
+    if (photos.length > 0 && await hasColumn('task_occurrences', 'photo_path')) {
       await query('UPDATE task_occurrences SET photo_path = ? WHERE id = ?', [photos[photos.length - 1].storedPath, occurrenceId]);
     }
 
@@ -228,11 +293,13 @@ async function getOccurrenceDetail(occurrenceId, tenantId = null) {
     [occurrence.task_id]
   );
 
-  const photos = await query(
-    `SELECT id, file_url, file_name, file_type, file_size, uploaded_at FROM files
-     WHERE occurrence_id = ? AND isActive = 1 ORDER BY uploaded_at DESC`,
-    [occurrenceId]
-  );
+  const photos = await hasColumn('files', 'occurrence_id')
+    ? await query(
+      `SELECT id, file_url, file_name, file_type, file_size, uploaded_at FROM files
+       WHERE occurrence_id = ? AND isActive = 1 ORDER BY uploaded_at DESC`,
+      [occurrenceId]
+    )
+    : [];
 
   const checklist = occurrence.checklist
     ? (typeof occurrence.checklist === 'string' ? JSON.parse(occurrence.checklist) : occurrence.checklist)

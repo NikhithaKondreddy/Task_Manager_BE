@@ -405,11 +405,19 @@ async function ensureSoftDeleteColumns() {
 
 async function ensureOccurrenceColumns() {
   if (await tableExists('task_occurrences')) {
+    await ensureColumn('task_occurrences', 'completed_at DATETIME NULL');
+    await ensureColumn('task_occurrences', 'remarks TEXT NULL');
+    await ensureColumn('task_occurrences', 'photo_path VARCHAR(1024) NULL');
+    await ensureColumn('task_occurrences', 'created_by INT NULL');
+    await ensureColumn('task_occurrences', 'tenant_id INT NULL');
+    await ensureColumn('task_occurrences', 'reminder_sent TINYINT(1) DEFAULT 0');
     await ensureColumn('task_occurrences', 'checklist JSON NULL');
     await ensureColumn('task_occurrences', 'latitude DECIMAL(10,7) NULL');
     await ensureColumn('task_occurrences', 'longitude DECIMAL(10,7) NULL');
     await ensureColumn('task_occurrences', 'location_name VARCHAR(255) NULL');
     await ensureColumn('task_occurrences', 'overdue_notified_at DATETIME NULL');
+    await ensureIndex('task_occurrences', 'idx_task_occurrences_tenant', 'INDEX idx_task_occurrences_tenant (tenant_id)');
+    await ensureIndex('task_occurrences', 'idx_task_occurrences_reminder_sent', 'INDEX idx_task_occurrences_reminder_sent (reminder_sent)');
   }
   if (await tableExists('files')) {
     await ensureColumn('files', 'occurrence_id INT NULL');
