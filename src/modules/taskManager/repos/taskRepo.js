@@ -57,7 +57,7 @@ async function list(tenantId, query = {}, scope = {}) {
   const where = ['t.tenant_id = ?', 't.is_deleted = 0'];
   const params = [tenantId];
 
-  const taskTypes = scope.taskTypes || (query.taskType ? [query.taskType] : ['INDIVIDUAL', 'PROJECT']);
+  const taskTypes = scope.taskTypes || (query.taskType ? [query.taskType] : ['INDIVIDUAL', 'PROJECT', 'RECURRING', 'GEMBA_WALK']);
   where.push(`t.task_type IN (${taskTypes.map(() => '?').join(',')})`);
   params.push(...taskTypes);
 

@@ -5,11 +5,11 @@ const { authorize } = require('../../../middleware/authorize');
 const { asyncHandler } = require('../../../utils/asyncHandler');
 const controller = require('../controllers/gembaWalksController');
 
-router.get('/', requireRole(['Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.list));
-router.get('/:id', requireRole(['Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.getOne));
-router.post('/', requireRole(['Manager']), authorize('recurringActivity', 'create'), asyncHandler(controller.create));
-router.put('/:id', requireRole(['Manager']), authorize('recurringActivity', 'update'), asyncHandler(controller.update));
-router.delete('/:id', requireRole(['Manager']), authorize('recurringActivity', 'delete'), asyncHandler(controller.remove));
-router.get('/:id/occurrences', requireRole(['Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.listOccurrences));
+router.get('/', requireRole(['SuperAdmin', 'Admin', 'Manager', 'Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.list));
+router.get('/:id', requireRole(['SuperAdmin', 'Admin', 'Manager', 'Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.getOne));
+router.post('/', requireRole(['SuperAdmin', 'Admin', 'Manager']), authorize('recurringActivity', 'create'), asyncHandler(controller.create));
+router.put('/:id', requireRole(['SuperAdmin', 'Admin', 'Manager']), authorize('recurringActivity', 'update'), asyncHandler(controller.update));
+router.delete('/:id', requireRole(['SuperAdmin', 'Admin', 'Manager']), authorize('recurringActivity', 'delete'), asyncHandler(controller.remove));
+router.get('/:id/occurrences', requireRole(['SuperAdmin', 'Admin', 'Manager', 'Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.listOccurrences));
 
 module.exports = router;

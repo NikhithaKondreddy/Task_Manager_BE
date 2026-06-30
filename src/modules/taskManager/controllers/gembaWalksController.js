@@ -37,32 +37,41 @@ async function create(req, res) {
   const {
     title, description, assignedTo, priority, allowPhoto, photoRequired, multiplePhotos,
     reminderEnabled, reminderTime, frequency, repeatEvery, daysOfWeek, dayOfMonth, startDate, endDate,
-    department, area, location, checklist
+    department, area, location, checklist, walkType, walkDate, startTime, endTime, status,
+    referenceDocument, checklistTemplateId, managerId, teamMembers
   } = req.body;
 
   if (!title) throw new HttpError(400, 'title is required', 'VALIDATION_ERROR');
   if (!assignedTo) throw new HttpError(400, 'assignedTo is required', 'VALIDATION_ERROR');
-  if (!frequency || frequency === 'None') throw new HttpError(400, 'frequency must be Daily, Weekly, or Monthly', 'VALIDATION_ERROR');
   if (!startDate) throw new HttpError(400, 'startDate is required', 'VALIDATION_ERROR');
 
   const task = await taskRepo.create({
     tenantId: req.user.tenant_id, taskType: 'GEMBA_WALK', title, description,
-    assignedTo, assignedBy: req.user._id, priority, startDate, dueDate: null,
+    assignedTo, assignedBy: req.user._id, priority, status: status || 'Pending',
+    startDate: startDate || walkDate, dueDate: startTime && (walkDate || startDate) ? `${walkDate || startDate} ${startTime}` : null,
     allowPhoto: allowPhoto !== undefined ? allowPhoto : true,
     photoRequired: photoRequired !== undefined ? photoRequired : true,
     multiplePhotos, reminderEnabled, reminderTime, createdBy: req.user._id
   });
 
-  const recurrence = await recurrenceRepo.create(task.id, req.user.tenant_id, {
-    frequency, repeatEvery, daysOfWeek: normalizeDaysOfWeek(daysOfWeek), dayOfMonth, startDate, endDate
-  });
+  let recurrence = null;
+  if (frequency && frequency !== 'None') {
+    recurrence = await recurrenceRepo.create(task.id, req.user.tenant_id, {
+      frequency, repeatEvery, daysOfWeek: normalizeDaysOfWeek(daysOfWeek), dayOfMonth, startDate, endDate
+    });
+  }
 
-  const details = await gembaRepo.createDetails(task.id, req.user.tenant_id, { department, area, location });
+  const details = await gembaRepo.createDetails(task.id, req.user.tenant_id, {
+    department, area, location, walkType, startTime, endTime, referenceDocument,
+    checklistTemplateId, managerId: managerId || req.user._id, teamMembers
+  });
   if (Array.isArray(checklist) && checklist.length) {
     await gembaRepo.addChecklistItems(task.id, req.user.tenant_id, checklist);
   }
 
-  await recurrenceEngine.generateInitialOccurrences(recurrence.id, 5);
+  if (recurrence) {
+    await recurrenceEngine.generateInitialOccurrences(recurrence.id, 5);
+  }
   await notify.notifyTaskAssigned(assignedTo, title, task.public_id, req.user.tenant_id);
   await logTaskEvent(req, { action: 'GEMBA_WALK_CREATED', entity: 'Task', entityId: task.id, details: { department, area, location } });
 
@@ -74,13 +83,27 @@ async function update(req, res) {
   if (!task || task.task_type !== 'GEMBA_WALK') throw new HttpError(404, 'Gemba walk not found', 'NOT_FOUND');
 
   const taskFields = {};
-  ['title', 'description', 'priority'].forEach((k) => { if (req.body[k] !== undefined) taskFields[k] = req.body[k]; });
+  ['title', 'description', 'priority', 'status'].forEach((k) => { if (req.body[k] !== undefined) taskFields[k] = req.body[k]; });
   if (req.body.assignedTo !== undefined) taskFields.assigned_to = req.body.assignedTo;
   if (Object.keys(taskFields).length) await taskRepo.update(task.id, req.user.tenant_id, taskFields);
 
   const { q } = require('../utils/db');
   const detailFields = {};
   ['department', 'area', 'location'].forEach((k) => { if (req.body[k] !== undefined) detailFields[k] = req.body[k]; });
+  const detailMap = {
+    walkType: 'walk_type',
+    startTime: 'start_time',
+    endTime: 'end_time',
+    referenceDocument: 'reference_document',
+    checklistTemplateId: 'checklist_template_id',
+    managerId: 'manager_id',
+    teamMembers: 'team_members'
+  };
+  Object.entries(detailMap).forEach(([bodyKey, dbKey]) => {
+    if (req.body[bodyKey] !== undefined) {
+      detailFields[dbKey] = Array.isArray(req.body[bodyKey]) ? JSON.stringify(req.body[bodyKey]) : req.body[bodyKey];
+    }
+  });
   if (Object.keys(detailFields).length) {
     const sets = Object.keys(detailFields).map((k) => `${k} = ?`).join(', ');
     await q(`UPDATE tm_gemba_details SET ${sets} WHERE task_id = ?`, [...Object.values(detailFields), task.id]);

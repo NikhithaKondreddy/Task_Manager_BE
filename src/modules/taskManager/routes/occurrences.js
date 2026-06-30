@@ -7,6 +7,7 @@ const { asyncHandler } = require('../../../utils/asyncHandler');
 const controller = require('../controllers/occurrencesController');
 
 router.get('/:id', requireRole(['Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.getOne));
+router.post('/:id/timer/:action(Start|Pause|Resume)', requireRole(['Employee']), authorize('recurringActivity', 'complete'), asyncHandler(controller.timerAction));
 router.post('/:id/complete', requireRole(['Employee']), authorize('recurringActivity', 'complete'), upload.array('photos', 5), asyncHandler(controller.complete));
 router.get('/:id/checklist', requireRole(['Employee']), authorize('recurringActivity', 'read'), asyncHandler(controller.listChecklist));
 router.put('/:id/checklist/:itemId', requireRole(['Employee']), authorize('recurringActivity', 'complete'), asyncHandler(controller.toggleChecklistItem));

@@ -5,6 +5,7 @@ const occurrenceRepo = require('../repos/occurrenceRepo');
 const photoRepo = require('../repos/photoRepo');
 const gembaRepo = require('../repos/gembaRepo');
 const completionService = require('../services/completionService');
+const timerService = require('../services/timerService');
 const { logTaskEvent } = require('../services/audit');
 
 function assertOwnedByEmployeeIfApplicable(req, occurrence) {
@@ -19,7 +20,7 @@ async function getOne(req, res) {
   assertOwnedByEmployeeIfApplicable(req, occurrence);
   const photos = await photoRepo.listForOccurrence(occurrence.id);
   const checklist = await gembaRepo.listForOccurrence(occurrence.id);
-  return success(res, { ...occurrence, photos, checklist });
+  return success(res, { ...occurrence, elapsed_seconds: timerService.elapsedSeconds(occurrence), photos, checklist });
 }
 
 async function complete(req, res) {
@@ -29,6 +30,18 @@ async function complete(req, res) {
     req, kind: 'occurrence', id: occurrence.id, remarks: req.body.remarks, files: req.files
   });
   return success(res, result, 'Occurrence submitted for approval');
+}
+
+async function timerAction(req, res) {
+  const occurrence = await occurrenceRepo.findByPublicId(req.params.id, req.user.tenant_id);
+  if (!occurrence) throw new HttpError(404, 'Occurrence not found', 'NOT_FOUND');
+  const result = await timerService.transition({
+    req,
+    kind: 'occurrence',
+    id: occurrence.id,
+    action: req.params.action
+  });
+  return success(res, result, `Timer ${req.params.action.toLowerCase()}ed`);
 }
 
 async function listChecklist(req, res) {
@@ -51,4 +64,4 @@ async function toggleChecklistItem(req, res) {
   return success(res, checklist, 'Checklist updated');
 }
 
-module.exports = { getOne, complete, listChecklist, toggleChecklistItem };
+module.exports = { getOne, complete, timerAction, listChecklist, toggleChecklistItem };

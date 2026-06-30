@@ -4,6 +4,7 @@ const photoService = require('./photoService');
 const notify = require('./notify');
 const { logTaskEvent } = require('./audit');
 const { normalizeRole } = require('../../../config/rbac');
+const timerService = require('./timerService');
 
 const TABLE = { task: 'tm_tasks', occurrence: 'tm_task_occurrences' };
 const APPROVAL_TYPE = { task: 'TASK_COMPLETION', occurrence: 'OCCURRENCE_COMPLETION' };
@@ -56,9 +57,14 @@ async function completeEntity({ req, kind, id, remarks, files }) {
     });
   }
 
+  const finalDuration = timerService.elapsedSeconds(entity);
   await q(
-    `UPDATE ${TABLE[kind]} SET status = 'Completed', approval_status = 'Pending', completed_at = NOW(), remarks = ?, rejection_reason = NULL, updated_at = NOW() WHERE id = ?`,
-    [remarks || null, id]
+    `UPDATE ${TABLE[kind]}
+     SET status = 'Completed', approval_status = 'Pending', completed_at = NOW(),
+         total_duration_seconds = ?, timer_status = 'Completed',
+         remarks = ?, rejection_reason = NULL, updated_at = NOW()
+     WHERE id = ?`,
+    [finalDuration, remarks || null, id]
   );
 
   const approvalInsert = await q(

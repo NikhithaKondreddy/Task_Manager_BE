@@ -105,6 +105,11 @@ CREATE TABLE `tm_tasks` (
   `recurrence_id` int DEFAULT NULL,
   `is_starred` tinyint(1) NOT NULL DEFAULT '0',
   `completed_at` datetime DEFAULT NULL,
+  `started_at` datetime DEFAULT NULL,
+  `paused_at` datetime DEFAULT NULL,
+  `resumed_at` datetime DEFAULT NULL,
+  `total_duration_seconds` int NOT NULL DEFAULT '0',
+  `timer_status` enum('Not Started','Running','Paused','Completed') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Not Started',
   `remarks` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
   `approval_status` enum('Not Required','Pending','Approved','Rejected') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Not Required',
   `approved_by` int DEFAULT NULL,
@@ -140,6 +145,11 @@ CREATE TABLE `tm_task_occurrences` (
   `status` enum('Pending','In Progress','Completed','Overdue','Rejected','Approved') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Pending',
   `assigned_to` int DEFAULT NULL,
   `completed_at` datetime DEFAULT NULL,
+  `started_at` datetime DEFAULT NULL,
+  `paused_at` datetime DEFAULT NULL,
+  `resumed_at` datetime DEFAULT NULL,
+  `total_duration_seconds` int NOT NULL DEFAULT '0',
+  `timer_status` enum('Not Started','Running','Paused','Completed') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Not Started',
   `remarks` text CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci,
   `approval_status` enum('Not Required','Pending','Approved','Rejected') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT 'Pending',
   `approved_by` int DEFAULT NULL,
@@ -166,8 +176,31 @@ CREATE TABLE `tm_gemba_details` (
   `department` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `area` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
   `location` varchar(255) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `walk_type` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `start_time` time DEFAULT NULL,
+  `end_time` time DEFAULT NULL,
+  `reference_document` varchar(500) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `checklist_template_id` varchar(100) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci DEFAULT NULL,
+  `manager_id` int DEFAULT NULL,
+  `team_members` json DEFAULT NULL,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uq_tm_gemba_details_task` (`task_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
+
+-- ---------------------------------------------------------------------
+-- task_timer_history (Employee real-time timer audit)
+-- ---------------------------------------------------------------------
+CREATE TABLE `task_timer_history` (
+  `id` int NOT NULL AUTO_INCREMENT,
+  `tenant_id` int DEFAULT NULL,
+  `entity_type` enum('task','occurrence') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `entity_id` int NOT NULL,
+  `action` enum('Start','Pause','Resume','Stop') CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL,
+  `action_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `performed_by` int DEFAULT NULL,
+  PRIMARY KEY (`id`),
+  KEY `idx_timer_history_entity` (`entity_type`,`entity_id`),
+  KEY `idx_timer_history_tenant` (`tenant_id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 -- ---------------------------------------------------------------------

@@ -70,7 +70,11 @@ async function gembaWalkReport(tenantId) {
     `SELECT t.public_id, t.title, g.department, g.area, g.location,
        COUNT(o.id) AS total_walks,
        SUM(CASE WHEN o.status IN ('Completed','Approved') THEN 1 ELSE 0 END) AS completed_walks,
-       SUM(CASE WHEN o.status = 'Overdue' THEN 1 ELSE 0 END) AS overdue_walks
+       SUM(CASE WHEN o.status = 'Overdue' THEN 1 ELSE 0 END) AS overdue_walks,
+       MIN(o.started_at) AS first_start_time,
+       MAX(o.completed_at) AS last_end_time,
+       SUM(COALESCE(o.total_duration_seconds, 0)) AS total_duration_seconds,
+       AVG(NULLIF(o.total_duration_seconds, 0)) AS average_duration_seconds
      FROM tm_tasks t
      JOIN tm_gemba_details g ON g.task_id = t.id
      LEFT JOIN tm_task_occurrences o ON o.task_id = t.id

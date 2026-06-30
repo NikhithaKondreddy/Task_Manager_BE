@@ -1,9 +1,20 @@
 const { q } = require('../utils/db');
 
-async function createDetails(taskId, tenantId, { department, area, location }) {
+async function createDetails(taskId, tenantId, {
+  department, area, location, walkType, startTime, endTime, referenceDocument,
+  checklistTemplateId, managerId, teamMembers
+}) {
   await q(
-    `INSERT INTO tm_gemba_details (task_id, tenant_id, department, area, location) VALUES (?, ?, ?, ?, ?)`,
-    [taskId, tenantId, department || null, area || null, location || null]
+    `INSERT INTO tm_gemba_details
+      (task_id, tenant_id, department, area, location, walk_type, start_time, end_time,
+       reference_document, checklist_template_id, manager_id, team_members)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      taskId, tenantId, department || null, area || null, location || null,
+      walkType || null, startTime || null, endTime || null, referenceDocument || null,
+      checklistTemplateId || null, managerId || null,
+      Array.isArray(teamMembers) ? JSON.stringify(teamMembers) : (teamMembers || null)
+    ]
   );
   return findByTaskId(taskId);
 }
