@@ -7,6 +7,7 @@ const logger = require('./logger');
 const { startSupportEmailWorker } = require('./src/modules/tickets');
 const auditCleanupService = require('./src/services/auditCleanupService');
 const notificationCleanupService = require('./src/services/notificationCleanupService');
+const taskManagerCronJobs = require('./src/modules/taskManager/services/cronJobs');
 
 async function start() {
   const requireRedis = (process.env.REQUIRE_REDIS !== 'false') && !!env.REDIS_URL;
@@ -48,6 +49,7 @@ async function start() {
     startSupportEmailWorker();
     auditCleanupService.start();
     notificationCleanupService.start();
+    taskManagerCronJobs.start();
   });
 
   const shutdown = async (signal) => {

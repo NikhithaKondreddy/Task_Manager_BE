@@ -483,6 +483,8 @@ const documentRoutes = require(__root + 'routes/documentRoutes');
 const workflowRoutes = require(__root + 'workflow/workflowRoutes');
 const reportRoutes = require(__root + 'routes/reportRoutes');
 const ticketRoutes = require(__root + 'modules/tickets/routes/ticketRoutes');
+const taskManagerRoutes = require(__root + 'modules/taskManager/routes/index');
+const { requireAuth } = require(__root + 'middleware/roles');
 
 const clientViewerAccessControl = require(__root + 'middleware/clientViewerAccess');
 const auth = require('./middleware/auth');
@@ -509,6 +511,7 @@ app.use(['/api/reports', '/reports'], reportRoutes);
 app.use(['/api/tickets', '/tickets'], auth, ticketRoutes);
 app.use(['/api/docs', '/docs'], express.static(path.join(__dirname, '..', 'docs')));
 app.use(['/api/occurrences', '/occurrences'], taskOccurrences);
+app.use(['/api/task-manager', '/task-manager'], requireAuth, taskManagerRoutes);
 
 const AdminController = require(__root + 'controllers/adminController');
 app.get(['/api/platform/settings', '/platform/settings'], AdminController.getSettings);

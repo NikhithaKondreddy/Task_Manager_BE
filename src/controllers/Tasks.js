@@ -1,4 +1,3 @@
-
 const db = require(__root + 'db');
 const express = require('express');
 const router = express.Router();

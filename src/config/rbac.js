@@ -56,7 +56,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     audit: { read: true },
     chat: { read: true, write: true },
     workflow: { read: true, approve: true },
-    settings: { read: true, update: true, manage_core: false }
+    settings: { read: true, update: true, manage_core: false },
+    approvals: { read: true, approve: true, reject: true },
+    photos: { read: true, upload: true, delete: true }
   },
   IT_SUPPORT: {
     dashboard: { read: true },
@@ -83,7 +85,9 @@ const DEFAULT_ROLE_PERMISSIONS = {
     audit: { read: true },
     chat: { read: true, write: true },
     workflow: { read: true, approve: true },
-    settings: { read: true, update: false, manage_core: false }
+    settings: { read: true, update: false, manage_core: false },
+    approvals: { read: true, approve: true, reject: true },
+    photos: { read: true, upload: true, delete: true }
   },
   EMPLOYEE: {
     dashboard: { read: true },
@@ -95,7 +99,8 @@ const DEFAULT_ROLE_PERMISSIONS = {
     notifications: { read: true },
     reports: { read: true },
     chat: { read: true, write: true },
-    workflow: { read: true }
+    workflow: { read: true },
+    photos: { read: true, upload: true }
   },
   CLIENT: {
     dashboard: { read: true },
@@ -165,10 +170,18 @@ function hasPermission(role, moduleKey, permissionKey, overrides = []) {
 
   if (matrix['*'] && matrix['*']['*']) return true;
   if (!moduleId || !permissionId) return false;
-  return Boolean(
-    matrix[moduleId] &&
-    (matrix[moduleId][permissionId] === true || matrix[moduleId]['*'] === true)
-  );
+
+  // Module keys are usually lowercase, but a few (e.g. recurringActivity) are camelCase.
+  // Try the direct key first, then fall back to a case-insensitive match.
+  const moduleEntry = matrix[moduleId]
+    || Object.keys(matrix).reduce((found, key) => found || (key.toLowerCase() === moduleId ? matrix[key] : null), null);
+  if (!moduleEntry) return false;
+
+  const permissionEntry = moduleEntry[permissionId] !== undefined
+    ? moduleEntry[permissionId]
+    : Object.keys(moduleEntry).reduce((found, key) => (found !== undefined ? found : (key.toLowerCase() === permissionId ? moduleEntry[key] : undefined)), undefined);
+
+  return Boolean(permissionEntry === true || moduleEntry['*'] === true);
 }
 
 function canManageRole(actorRole, targetRole) {
